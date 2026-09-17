@@ -39,6 +39,7 @@ def render_page(supabase):
         return
 
     df = pd.DataFrame(transactions)
+    df = df.drop_duplicates(subset='id', keep='first')
     df['amount'] = pd.to_numeric(df['amount'])
     
     # Map the account names into the dataframe
@@ -51,6 +52,13 @@ def render_page(supabase):
 
     # Decrypt the description column so the UI and AI get the readable names
     df['description'] = df['description'].apply(lambda x: decrypt_data(str(x)) if pd.notnull(x) else "")
+
+    # Drop duplicate *content* (same time, amount, merchant, account) — double-clicked
+    # Save or a re-run sync can insert the same spend twice with different ids.
+    df = df.drop_duplicates(
+        subset=['transaction_time', 'amount', 'description', 'account_id', 'type'],
+        keep='first',
+    )
 
     # We only care about checking Expenses for anomalies, not Income
     expenses_df = df[df['type'] == 'Expense'].copy()
@@ -79,6 +87,9 @@ def render_page(supabase):
 
         # --- 4. FILTER THE OUTLIERS ---
         anomalies = expenses_df[(expenses_df['is_temporal_anomaly']) | (expenses_df['is_behavioral_anomaly'])].copy()
+
+    # Most recent transactions first
+    anomalies = anomalies.sort_values('transaction_time', ascending=False)
 
     # --- 5. THE UI DASHBOARD ---
     st.write("---")

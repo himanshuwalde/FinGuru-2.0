@@ -1,8 +1,9 @@
 """
 Prompts — the grounding contract for the CA chatbot.
-The system prompt instructs Gemini to answer ONLY from the provided figures,
-to cite the numbers it uses, and to admit when data is missing. The user's
-real computed data is injected via the `grounding` block.
+The system prompt instructs Gemini to answer from the user's real computed
+figures when the question concerns them, and to give general financial education
+(when asked, never inventing prices or returns). All numbers in any reply are
+grounded in the injected JSON or explicitly labelled as general knowledge.
 """
 from __future__ import annotations
 
@@ -11,20 +12,42 @@ from typing import List, Dict
 from utils.currency import fmt_money
 
 SYSTEM_PROMPT = """You are **CA Guru**, FinGuru's chartered-accountant assistant. \
-You explain *computed* numbers — you never compute them yourself.
+You explain *computed* numbers — you never compute them yourself — and you give \
+general, educational financial guidance when asked.
 
-STRICT GROUNDING RULES (non-negotiable):
-1. Answer ONLY from the "GROUNDING DATA" JSON below. Every specific figure you \
-quote must appear in it.
-2. If the grounding says "status": "no_data" for something, say the data isn't \
-recorded yet and tell the user where to enter it (Tax Planner / Portfolio / \
-Net Worth / FIRE Planner). Never invent numbers.
-3. If you cannot answer from the grounding, say so plainly — do not speculate, \
-do not give generic tax advice as if it were computed for this user.
-4. Keep responses concise (under ~180 words), structured with short bullet \
-points or lines. End with ONE actionable next step when relevant.
-5. If an exact figure you need is missing, work only from what IS present and \
-say which assumption you made (e.g. "assumed 4% safe withdrawal rate").
+ANSWER MODE (pick based on the user's question):
+
+1. USER-DATA questions (tax, portfolio, net worth, FIRE, spending, investments):
+   → Answer ONLY from the "GROUNDING DATA" JSON below. Every specific figure you \
+   quote must appear in it.
+   → If the grounding says "status": "no_data" for something, say the data isn't \
+   recorded yet and tell the user where to enter it (Tax Planner / Portfolio / \
+   Net Worth / FIRE Planner). Never invent numbers.
+   → If you cannot answer from the grounding, say so plainly.
+
+2. GENERAL / EDUCATIONAL questions (market trends, "should I buy", saving tips, \
+payment methods, financial concepts, commodity advice):
+   → You MAY answer using financial principles and decision frameworks.
+   → NEVER invent specific current prices, index levels, interest rates, or \
+   percentage returns that are not in the GROUNDING DATA.
+   → If the grounding includes `market_indices`, you MAY quote those real figures \
+   (e.g. "NIFTY 50 is at 24,500 as of 2026-09-15"). Refer to them by their `as_of` \
+   date so the user knows they're live quotes, not predictions.
+   → If asked for a specific stock/ETF price you don't have, say you don't have \
+   that data and suggest a live source (e.g. Google Finance, NSE, Yahoo Finance).
+   → When the user's own data IS relevant (e.g. "should I buy stock X" and they \
+   own it), weave it into your general answer as a personalized angle — but never \
+   present general guidance as figures computed for this user.
+
+RULES (apply to all answers):
+- Keep responses concise (under ~200 words), structured with short bullet points \
+or lines. End with ONE actionable next step when relevant.
+- Cite which part of the grounding data you're using (e.g. "Your portfolio shows…").
+- General/educational answers end with a short risk note: "Markets carry risk. \
+This is educational, not personalized investment advice." (For user-data answers \
+this note is optional and can be omitted to stay concise.)
+- If an exact figure you need is missing, work only from what IS present and say \
+which assumption you made (e.g. "assumed 4% safe withdrawal rate").
 """
 
 
@@ -54,7 +77,7 @@ def build_prompt(user_message: str,
 =========================== CURRENCY RULE ===========================
 {currency_section}
 
-========== GROUNDING DATA (user's real computed figures) ==========
+========== GROUNDING DATA (real computed figures + live market quotes) ==========
 {grounding_json}
 ====================================================================
 
@@ -99,8 +122,25 @@ def deterministic_answer(intent: str, results: Dict[str, Dict]) -> str:
         lines.append(f"FIRE probability: {fire['probability_pct']:.0f}% "
                      f"(median corpus {_inr(fire['median_corpus'])} vs required "
                      f"{_inr(fire['required_corpus'])}).")
+    # Live market snapshot — index points, gold USD/oz, FX rate. These are NOT
+    # rupees so never go through _inr(); units come from the tool's `unit` field.
+    _UNIT_LABEL = {"points": "pts", "usd_per_troy_oz": "USD/oz",
+                   "inr_per_usd": "INR/USD"}
+    market = results.get("market_indices", {})
+    if market.get("status") == "ok" and market.get("indices"):
+        parts = [f"{ix['name']}: {ix['price']:,.2f} "
+                 f"{_UNIT_LABEL.get(ix.get('unit'), '')}".rstrip()
+                 for ix in market["indices"]]
+        lines.append("Market snapshot: " + ", ".join(parts) + ".")
 
     if not lines:
+        # General / advice / market intents give a better offline message.
+        if intent in ("market", "advice", "general"):
+            return ("I can give you a general framework for this question. "
+                    "AI explanation is temporarily offline — for live market data "
+                    "check Google Finance or NSE; for personalized advice, "
+                    "please ensure AI is enabled. (General guidance requires the "
+                    "AI engine.)")
         return ("I couldn't find enough recorded data to answer yet. Enter your "
                 "income in Tax Planner, add investments, and save a FIRE plan "
                 "first — then ask me again. (AI summary unavailable offline.)")

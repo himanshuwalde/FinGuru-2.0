@@ -4,7 +4,8 @@ from pydantic import BaseModel
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
-from datetime import datetime  # ✨ NEW: Needed for the anomaly timestamp
+from datetime import datetime, timedelta, timezone  # anomaly timestamp (IST-aware)
+IST = timezone(timedelta(hours=5, minutes=30))
 from utils.anomaly_engine import check_and_alert_anomaly  # ✨ NEW: Import your anomaly engine
 
 load_dotenv()
@@ -61,7 +62,7 @@ async def intercept_checkout(req: CheckoutRequest):
                 amount=req.product_price,
                 category="Shopping", # Default category for e-commerce intercepts
                 description=req.product_url,
-                transaction_time_iso=datetime.now().isoformat(),
+                transaction_time_iso=datetime.now(IST).isoformat(),
                 account_name="E-Commerce Intercept" # So the user knows it came from the Chrome Extension
             )
 

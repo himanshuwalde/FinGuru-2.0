@@ -254,8 +254,10 @@ def render_page(supabase):
                             st.rerun() 
                             
                         else:
-                            # Insert New Transaction
-                            supabase.table("transactions").insert(transaction_data).execute()
+                            # Insert New Transaction (capture its id so the anomaly
+                            # check can measure against PAST transactions only)
+                            ins_res = supabase.table("transactions").insert(transaction_data).execute()
+                            new_ids = [r["id"] for r in (ins_res.data or []) if r.get("id")]
                             
                             balance_modifier = new_amount if st.session_state.trans_type == "Income" else -new_amount
                             current_bal_res = supabase.table("accounts").select("balance").eq("id", account_dict[account_name]).execute()
@@ -279,7 +281,8 @@ def render_page(supabase):
                                         category=category,
                                         description=description,
                                         transaction_time_iso=str(final_datetime),
-                                        account_name=account_name
+                                        account_name=account_name,
+                                        exclude_ids=new_ids
                                     )
 
                             st.success(f"Successfully logged {st.session_state.trans_type} of {fmt_money(amount, dp=2)}!")

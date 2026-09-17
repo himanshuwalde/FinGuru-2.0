@@ -29,7 +29,9 @@ def respond(supabase: Client, user_id: str,
             user_message: str,
             history: Optional[List[Dict]] = None) -> Tuple[str, str, Dict]:
     """
-    Returns (reply_text, intent, grounding_dict).
+    Returns (reply_text, intent, grounding_dict, used_ai). `used_ai` is True
+    when Gemini produced the reply and False when it fell back to the
+    deterministic answer (no API key, quota exceeded, network error).
     Never raises: any failure degrades to the deterministic offline answer.
     """
     history = history or []
@@ -56,30 +58,40 @@ def respond(supabase: Client, user_id: str,
         print(f"[ca_chatbot] AI call failed ({e}); using deterministic fallback")
         text = None
 
-    if not text or not text.strip():
+    used_ai = bool(text and text.strip())
+    if not used_ai:
         text = deterministic_answer(intent, results)
 
-    return text.strip(), intent, results
+    return text.strip(), intent, results, used_ai
 
 
 def log_conversation(supabase: Client, user_id: str, user_message: str,
-                     intent: str, grounding: Dict, ai_response: str) -> bool:
-    """Persist one chat exchange to `ai_conversations` (used by ai_advisor)."""
+                     intent: str, grounding: Dict, ai_response: str,
+                     session_id: Optional[str] = None) -> bool:
+    """Persist one chat exchange to `ai_conversations` (used by ai_advisor).
+
+    `session_id` is the optional chat session this exchange belongs to; when
+    present it links the audit row to a saved conversation. Backward
+    compatible: legacy callers that omit it keep inserting ungrouped rows.
+    """
     try:
         import json
         typical = ["tax", "tax_saving", "portfolio", "net_worth", "fire",
-                   "spending", "general"]
+                   "spending", "market", "advice", "general"]
         summary = {"intent": intent}
         for k, v in grounding.items():
             if k in typical and isinstance(v, dict) and v.get("status") == "ok":
                 summary[k] = _shorten(v)
-        supabase.table("ai_conversations").insert({
+        payload = {
             "user_id": user_id,
             "user_message": user_message[:2000],
             "context": json.dumps(summary, default=float)[:8000],
             "ai_response": ai_response[:4000],
             "model": "",
-        }).execute()
+        }
+        if session_id:
+            payload["session_id"] = session_id
+        supabase.table("ai_conversations").insert(payload).execute()
         return True
     except Exception as e:
         print(f"[ca_chatbot] log_conversation failed: {e}")

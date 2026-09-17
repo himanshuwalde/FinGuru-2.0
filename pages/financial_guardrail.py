@@ -1,12 +1,20 @@
 import hashlib
+import os
 import secrets
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import plotly.graph_objects as go
 from utils.ai_client import get_gemini_client, get_best_model, generate_content_safe
 from utils.ai_persona import persona_and_currency_note
 from utils.currency import fmt_label, fmt_money
+
+# The webhook URL the Chrome Extension must POST checkouts to.
+# Render / local — whichever env var is set, or the Streamlit Cloud default.
+_WEBHOOK_URL = os.environ.get(
+    "WEBHOOK_URL",
+    os.environ.get("INTERCEPT_WEBHOOK_URL", ""),
+)
 
 # Initialize AI client
 genai_client = get_gemini_client()
@@ -139,8 +147,7 @@ def render_page(supabase):
     with c2:
         st.subheader("🔗 Active Interception Queue")
 
-        # ── 3a. PAIRING CODE ──────────────────────────────────────────────────
-        code = _pairing_code(st.session_state.user_id)
+        # ── 3a. EXTENSION SETUP ─────────────────────────────────────────────
         with st.container(border=True):
             pc_head, pc_btn = st.columns([4, 1])
             with pc_head:
@@ -150,57 +157,84 @@ def render_page(supabase):
                     unsafe_allow_html=True,
                 )
                 st.caption(
-                    "Enter this 6-digit code in the FinGuru Chrome Extension "
-                    "settings to link this session. Once paired, intercepted "
-                    "checkouts appear below automatically."
+                    "The extension needs two values to send intercepted checkouts "
+                    "to this app: your **User ID** and the **Webhook URL**. "
+                    "Enter both in the extension's settings."
                 )
             with pc_btn:
                 st.write("")
                 if st.button("🔄 New Code", key="new_pair_code", use_container_width=True):
-                    # Regenerate by hashing with a salt stored in session state
                     new_salt = secrets.token_hex(4)
                     st.session_state["_pair_salt"] = new_salt
                     st.rerun()
 
-            # Display the code large and copy-friendly
+            # User ID — the extension must send this in every checkout POST
+            uid = st.session_state.user_id
+            st.text_input(
+                "Your User ID (paste into extension)",
+                value=uid,
+                disabled=True,
+                key="_ext_uid_display",
+                help="The extension sends this in every checkout payload.",
+            )
+
+            # Webhook URL — the extension POSTs here
+            webhook_display = _WEBHOOK_URL if _WEBHOOK_URL else "⚠️ Not configured — set WEBHOOK_URL in your environment"
+            st.text_input(
+                "Webhook URL (paste into extension)",
+                value=webhook_display,
+                disabled=True,
+                key="_ext_webhook_display",
+                help="The Chrome extension POSTs intercepted checkouts to this URL.",
+            )
+
+            # Legacy pairing code (kept for backward compat)
+            code = _pairing_code(st.session_state.user_id)
             display_code = code if not st.session_state.get("_pair_salt") \
                 else str(int(hashlib.sha256(
                     (st.session_state.user_id + st.session_state["_pair_salt"]).encode()
                 ).hexdigest()[:8], 16) % 1_000_000).zfill(6)
-
-            st.markdown(
-                f"""<div style="text-align:center;padding:18px 0 8px;background:
-                    var(--secondary-background-color);border-radius:10px;
-                    border:1px solid rgba(150,150,150,.15);margin:4px 0 10px">
-                    <span style="font-size:2.4rem;font-weight:800;letter-spacing:8px;
-                        color:var(--primary-color);font-family:monospace">{display_code}</span>
-                    <div style="font-size:.75rem;opacity:.55;margin-top:4px">
-                        Expires in 24 hours · one device per code</div>
-                </div>""",
-                unsafe_allow_html=True,
+            st.text_input(
+                "Pairing code (legacy — use User ID + Webhook URL instead)",
+                value=display_code,
+                disabled=True,
+                key="_ext_code_display",
             )
 
-            # Connection status
+            # Connection status — check for recent checkouts (last 1 h) rather
+            # than just querying the table (which always succeeds if the table
+            # exists, even when the extension has never sent anything).
             try:
+                one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
                 ext_res = (
                     supabase.table("pending_checkouts")
-                    .select("id", count="exact")
-                    .eq("user_id", st.session_state.user_id)
+                    .select("id")
+                    .eq("user_id", uid)
+                    .gte("created_at", one_hour_ago)
+                    .limit(1)
                     .execute()
                 )
-                has_data = True  # if the query succeeded, the table exists
+                has_recent = bool(ext_res.data)
             except Exception:
-                has_data = False
+                has_recent = False
 
-            if has_data:
+            if has_recent:
                 st.success(
-                    "🟢 Extension is connected and monitoring your checkouts.",
+                    "🟢 Extension is connected — intercepted checkouts are "
+                    "appearing in the queue below.",
                     icon="✅",
+                )
+            elif not _WEBHOOK_URL:
+                st.warning(
+                    "⚪ **Webhook URL not configured.** Set `WEBHOOK_URL` in "
+                    "your environment (e.g. `https://your-app.onrender.com`) "
+                    "so the extension knows where to send checkouts."
                 )
             else:
                 st.info(
-                    "⚪ Extension not yet paired. Enter the code above in the "
-                    "FinGuru Chrome Extension to start protecting your goals."
+                    "⚪ Extension not yet paired. Open the FinGuru Chrome "
+                    "Extension settings, paste your **User ID** and **Webhook "
+                    "URL** above, then visit an e-commerce checkout page."
                 )
 
         st.write("")

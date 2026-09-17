@@ -65,6 +65,36 @@ def test_route_empty_message_is_general():
     assert route_intent("") == "general"
 
 
+def test_route_market():
+    assert route_intent("what's the current market update?") == "market"
+
+
+def test_route_market_nifty():
+    assert route_intent("is nifty up today?") == "market"
+
+
+def test_route_advice():
+    assert route_intent("should i buy a stock?") == "advice"
+
+
+def test_route_advice_credit_card():
+    assert route_intent("should i buy gold using credit card?") == "advice"
+
+
+def test_route_advice_saving_money():
+    assert route_intent("how to save money every month?") == "advice"
+
+
+def test_route_portfolio_still_wins_for_data():
+    # "stock" appears in portfolio keywords, but data questions must stay grounded.
+    assert route_intent("what is my portfolio xirr?") == "portfolio"
+
+
+def test_route_net_worth_still_wins_for_loan():
+    # "loan" is a net_worth keyword; "loan or" (in advice) must not hijack it.
+    assert route_intent("what is my outstanding loan?") == "net_worth"
+
+
 # ------------------------------------------------------------- grounding/tools
 
 def test_all_tools_run_without_mutation_on_missing_data():
@@ -73,6 +103,16 @@ def test_all_tools_run_without_mutation_on_missing_data():
     for name, res in results.items():
         assert isinstance(res, dict)
         assert "status" in res  # either no_data / ok — never a crash
+
+
+def test_market_tool_never_crashes_without_network():
+    # The market tool must degrade to no_data (never raise) with no yfinance /
+    # no network. Uses the same exploding-supabase fake — user data untouched.
+    from ai.context_builder import tool_market_indices
+    result = tool_market_indices(FAKE, "user-1")
+    assert isinstance(result, dict)
+    assert "status" in result  # ok or no_data — never a crash
+    assert isinstance(result.get("indices"), list)
 
 
 def test_grounding_serializes_to_valid_json():
@@ -100,17 +140,19 @@ def _force_no_api_key(monkeypatch):
 
 def test_respond_never_raises_without_gemini(monkeypatch):
     _force_no_api_key(monkeypatch)
-    text, intent, results = respond(FAKE, "user-1", "how can I save tax?", [])
+    text, intent, results, used_ai = respond(FAKE, "user-1", "how can I save tax?", [])
     assert isinstance(text, str) and text.strip()
     assert intent in INTENT_TOOLS
     assert isinstance(results, dict)
+    assert used_ai is False  # offline → deterministic fallback, no Gemini
 
 
 def test_fallback_mentions_missing_data_when_nothing_stored(monkeypatch):
     # No gemini key + empty DB → deterministic, truthful "no data" reply.
     _force_no_api_key(monkeypatch)
-    text, intent, _ = respond(FAKE, "user-1", "what is my xirr?", [])
+    text, intent, _, used_ai = respond(FAKE, "user-1", "what is my xirr?", [])
     assert intent == "portfolio"
+    assert used_ai is False
     # The offline answer should not present invented numbers.
     assert "recording" in text or "recorded" in text or "offline" in text or "₹" in text
 
@@ -120,3 +162,16 @@ def test_fallback_is_same_for_same_input(monkeypatch):
     a = respond(FAKE, "user-1", "what is my net worth?", [])[0]
     b = respond(FAKE, "user-1", "what is my net worth?", [])[0]
     assert a == b  # deterministic — reproducible for viva/demo
+
+
+def test_respond_marks_used_ai_when_gemini_replies(monkeypatch):
+    # A working Gemini (mocked) must flag used_ai=True and pass its text through.
+    import utils.ai_client as ac
+    monkeypatch.setattr(ac, "get_gemini_client", lambda: object())
+    monkeypatch.setattr(ac, "get_generative_model",
+                        lambda genai, prefer_flash=True: object())
+    monkeypatch.setattr(ac, "generate_content_safe",
+                        lambda model, prompt, max_retries=2: "AI hello")
+    text, intent, results, used_ai = respond(FAKE, "user-1", "hello", [])
+    assert used_ai is True
+    assert text == "AI hello"

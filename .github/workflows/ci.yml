@@ -31,3 +31,19 @@ jobs:
       - name: Run test suite
         run: |
           python -m pytest tests/ -q
+
+      # ── Non-blocking audit ─────────────────────────────────────────────
+      # ruff + bandit report style/lint/security issues but NEVER fail the run
+      # (continue-on-error). pytest above remains the only hard gate.
+      - name: Install audit tools
+        run: pip install ruff bandit
+
+      - name: Ruff lint check (non-blocking)
+        if: always()
+        continue-on-error: true
+        run: ruff check . --output-format=github
+
+      - name: Bandit security audit (non-blocking)
+        if: always()
+        continue-on-error: true
+        run: bandit -r . -f github

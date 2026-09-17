@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from engines import fire_engine
-from services.fire_service import get_fire_service
+from services.fire_service import estimate_inflation_rate, get_fire_service
 from utils.ai_client import get_gemini_client, get_best_model, generate_content_safe
 from utils.ai_persona import persona_and_currency_note
 from utils.currency import fmt_input_label, fmt_label, fmt_money, symbol, to_inr
@@ -23,17 +23,99 @@ genai_client = get_gemini_client()
 
 
 @st.dialog("Clear last result")
-def confirm_clear_last_result():
-    """Ask before wiping the current FIRE simulation result."""
+def confirm_clear_last_result(svc, user_id):
+    """Ask before wiping the current FIRE simulation result — both the in-memory
+    view AND the most recent saved run. Clearing only the session view didn't
+    change anything because the run was still persisted, so it reappeared in the
+    history table; now it is deleted from the DB too."""
     st.warning("Clear the current FIRE simulation result? "
                "You'll have to run the simulation again.")
     c1, c2 = st.columns(2)
     if c1.button("Yes, clear", type="primary", use_container_width=True):
+        cur = st.session_state.get("fire_result")
+        run_id = cur.get("id") if isinstance(cur, dict) else None
+        if run_id:
+            svc.delete_simulation(user_id, run_id)
         st.session_state.fire_result = None
         st.session_state.pop("twin_context", None)
         st.rerun()
     if c2.button("Cancel", use_container_width=True):
         st.rerun()
+
+
+@st.dialog("Delete FIRE run")
+def confirm_delete_run(svc, run):
+    """Ask before permanently deleting one historical FIRE simulation."""
+    st.warning(f"Permanently delete the FIRE run from "
+               f"**{run['created_at'][:16]}**? This cannot be undone.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, delete", type="primary", use_container_width=True):
+        if svc.delete_simulation(st.session_state.user_id, run["id"]):
+            # If the deleted run is the one currently on screen, clear it too so
+            # the page doesn't keep showing a run that no longer exists.
+            if (st.session_state.get("fire_result") or {}).get("id") == run["id"]:
+                st.session_state.fire_result = None
+                st.session_state.pop("twin_context", None)
+            st.rerun()
+        else:
+            st.error("Couldn't delete — the record may already be gone.")
+    if c2.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
+def _render_recent_runs(svc, history):
+    """Recent FIRE runs as a proper table — one row per run, newest first, with
+    a checkbox column to select a run, then a delete button below. Runs are
+    read-only except the checkbox. (Streamlit's data_editor has no button
+    column, so delete is a select-and-confirm flow.)"""
+    st.markdown("##### Recent FIRE runs")
+    if not history:
+        return
+    st.caption("Newest first — every row is a saved Monte Carlo trial "
+               f"({len(history)} shown).")
+
+    df = pd.DataFrame([{
+        "id": h["id"],
+        "Run": h["created_at"][:16].replace("T", " "),
+        "Target age": int(h.get("target_age") or 0),
+        "P(FIRE)": f"{float(h.get('probability_pct') or 0):.0f}%",
+        "Required corpus": fmt_money(h.get("required_corpus") or 0),
+        "Median corpus": fmt_money(h.get("projected_corpus") or 0),
+        "p5 (pessimist)": fmt_money(h.get("p5") or 0),
+        "p95 (optimist)": fmt_money(h.get("p95") or 0),
+        "Delete": False,  # per-row checkbox — select a run to delete it
+    } for h in history])
+
+    edited = st.data_editor(
+        df,
+        key="fire_history_editor",
+        hide_index=True,
+        use_container_width=True,
+        # Everything read-only except the Delete checkbox column.
+        disabled=[c for c in df.columns if c != "Delete"],
+        column_config={
+            # Hidden on screen — carried only so delete can identify the run.
+            "id": None,
+        },
+    )
+
+    if edited is None:
+        return
+    # Which history rows match the ticked checkboxes.
+    marked = [h for h in history
+              if edited.loc[edited["id"] == h["id"], "Delete"].fillna(False).any()]
+    if not marked:
+        return
+    if len(marked) > 1:
+        st.caption("Select exactly one run to delete at a time.")
+        return
+    run = marked[0]
+    if st.button(f"🗑 Delete run from {run['created_at'][:16]}",
+                 use_container_width=True):
+        # Reset the editor so the tick clears and doesn't re-trigger after the
+        # dialog closes.
+        st.session_state.pop("fire_history_editor", None)
+        confirm_delete_run(svc, run)
 
 
 def _render_future_self_chat():
@@ -139,6 +221,22 @@ def render_page(supabase):
     saved = svc.get_profile(user_id) or fire_engine.default_profile()
     avg_expense = svc.estimate_monthly_expense(user_id)
 
+    # Auto-fill from real data so the planner starts grounded in the user's
+    # actual financial picture instead of blank/arbitrary defaults:
+    #   corpus      = bank balances + portfolio current values (Net Worth base)
+    #   volatility  = weighted by the portfolio's real asset-class allocation
+    #   inflation   = live web lookup of the current India CPI rate (cached 24h)
+    auto_corpus = svc.estimate_portfolio_corpus(user_id)              # INR
+    auto_vol = svc.estimate_portfolio_volatility(user_id)             # % p.a.
+    live_infl = estimate_inflation_rate("India")                      # % p.a.
+
+    # Respect a previously-saved profile value when it exists (non-zero);
+    # otherwise the auto-filled number stands. Once the user edits a widget,
+    # session state keeps their value across reruns regardless.
+    def saved_or(key, fallback):
+        v = float(saved.get(key) or 0)
+        return v if v > 0 else fallback
+
     c1, c2 = st.columns(2)
     with c1:
         cur_age = st.number_input("Current age", 18, 80,
@@ -147,8 +245,10 @@ def render_page(supabase):
             fmt_input_label("Monthly expense"), 0.0, 1e7,
             float(avg_expense if avg_expense else saved.get("monthly_expense", 30000)),
             key="fr_exp")
-        corpus = st.number_input(fmt_input_label("Current corpus"), 0.0, 1e11,
-                                 float(saved.get("current_corpus", 0)), key="fr_corpus")
+        corpus = st.number_input(
+            fmt_input_label("Current corpus"), 0.0, 1e11,
+            saved_or("current_corpus", auto_corpus), key="fr_corpus",
+            help="Pre-filled from your bank balances + Portfolio holdings.")
         ret = st.number_input("Expected return (% p.a.)", 0.0, 25.0,
                               float(saved.get("expected_return_pct", 10)), key="fr_ret")
     with c2:
@@ -158,18 +258,27 @@ def render_page(supabase):
         invest = st.number_input(fmt_input_label("Monthly investment"), 0.0, 1e7,
                                  float(saved.get("monthly_investment", 20000)),
                                  key="fr_invest")
-        infl = st.number_input("Inflation (% p.a.)", 0.0, 15.0,
-                               float(saved.get("inflation_pct", 6)), key="fr_infl")
+        infl = st.number_input(
+            "Inflation (% p.a.)", 0.0, 15.0, live_infl, key="fr_infl",
+            help=f"Pre-filled from a live web lookup (current India CPI, "
+                 f"cached 24h). Latest fetch: {live_infl:.2f}% — the saved "
+                 f"profile rate is shown only if you change it yourself.")
         swr = st.number_input("Safe withdrawal rate (% p.a.)", 1.0, 8.0,
                               float(saved.get("safe_withdrawal_rate_pct", 4)),
                               key="fr_swr")
 
     with st.expander("⚙️ Advanced (Monte Carlo settings)"):
         c1, c2 = st.columns(2)
-        vol = c1.number_input("Portfolio volatility (% p.a.)", 1.0, 40.0,
-                              fire_engine.DEFAULT_VOLATILITY_PCT, key="fr_vol")
+        vol = c1.number_input(
+            "Portfolio volatility (% p.a.)", 1.0, 40.0, auto_vol,
+            key="fr_vol",
+            help="Estimated by weighting each of your holdings' asset class "
+                 "against its typical market volatility. Tweak up/down freely.")
         n_sims = c2.number_input("Number of simulations", 500, 20000, 3000,
-                                 step=500, key="fr_nsim")
+                                 step=500, key="fr_nsim",
+                                 help="More trials = a smoother probability "
+                                      "curve and a more stable %. 3,000 is a "
+                                      "good balance of speed and precision.")
 
     c1, c2 = st.columns(2)
     if c1.button("▶️ Save profile & run FIRE simulation",
@@ -201,8 +310,10 @@ def render_page(supabase):
             st.warning("Couldn't run — did you run migrations/001 in Supabase? "
                        "Tables `fire_profiles`/`fire_simulations` must exist.")
     with c2:
-        if st.button("🗑 Clear last result", use_container_width=True):
-            confirm_clear_last_result()
+        has_result = st.session_state.get("fire_result") is not None
+        if st.button("🗑 Clear last result", use_container_width=True,
+                     disabled=not has_result):
+            confirm_clear_last_result(svc, user_id)
 
     result = st.session_state.get("fire_result")
     if not result:
@@ -211,13 +322,7 @@ def render_page(supabase):
                                 "hit the run button.", "info")
         history = svc.get_recent_simulations(user_id)
         if history:
-            st.markdown("##### Recent FIRE runs")
-            hrows = [{"Target age": h["target_age"],
-                      "Required corpus": fmt_money(h["required_corpus"]),
-                      "Median corpus": fmt_money(h["projected_corpus"]),
-                      "P(FIRE)": f"{h['probability_pct']:.0f}%",
-                      "Run at": h["created_at"][:10]} for h in history]
-            st.dataframe(pd.DataFrame(hrows), use_container_width=True, hide_index=True)
+            _render_recent_runs(svc, history)
         st.write("---")
         _render_future_self_chat()
         return
@@ -284,14 +389,7 @@ def render_page(supabase):
     # ------------------------------------------------------- run history
     history = svc.get_recent_simulations(user_id)
     if history:
-        st.markdown("##### Recent FIRE runs")
-        hrows = [{"Target age": h["target_age"],
-                  "Required corpus": fmt_money(h["required_corpus"]),
-                  "Median corpus": fmt_money(h["projected_corpus"]),
-                  "P(FIRE)": f"{h['probability_pct']:.0f}%",
-                  "p5–p95": f"{fmt_money(h['p5'])} – {fmt_money(h['p95'])}",
-                  "Run at": h["created_at"][:10]} for h in history]
-        st.dataframe(pd.DataFrame(hrows), use_container_width=True, hide_index=True)
+        _render_recent_runs(svc, history)
 
     # ------------------------------------------------------ future self chat
     st.write("---")

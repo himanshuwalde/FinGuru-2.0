@@ -4,13 +4,10 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from utils.security import encrypt_data, decrypt_data
 from utils.currency import fmt_label, fmt_money
-from utils.anomaly_engine import check_and_alert_anomaly
 from utils.ai_client import get_gemini_client, get_best_model, generate_content_safe
-import json
-import re
 import time
-import tempfile
-import os
+
+import services.document_processing as dp
 
 # Initialize AI client
 genai_client = get_gemini_client()
@@ -120,125 +117,76 @@ def render_page(supabase):
             
             if uploaded_file and st.button("Extract & Sync Transactions", type="primary"):
                 with st.spinner("🧠 AI is analyzing the document... Please wait."):
-                    temp_path = None
-                    gemini_file = None
                     try:
                         target_model = get_best_model(genai_client, prefer_flash=True)
                         model = genai_client.GenerativeModel(target_model)
+                        st.info(f"*(Diagnostic: Successfully connected to next-gen model '{target_model}')*)")
 
-                        st.info(f"*(Diagnostic: Successfully connected to next-gen model '{target_model}')*")
-                        
-                        prompt = """
-                        You are a strict financial data extraction AI. Extract all transactions from this document.
-                        Return ONLY a valid JSON array of objects. Do not include markdown formatting (like ```json), no intro, no outro.
-                        Each object must have exactly these keys:
-                        - "desc": (string) The merchant or description.
-                        - "amount": (float) The positive transaction amount.
-                        - "category": (string) Choose ONE from: Food & Dining, Transport, Shopping, Entertainment, Groceries, Utilities, Income, Education, Other.
-                        - "type": (string) "Expense" or "Income".
-                        - "date": (string) "YYYY-MM-DD" format. If an exact time is visible on the receipt, use "YYYY-MM-DD HH:MM:SS". Do NOT guess the time as 00:00:00 if it is missing.
-                        """
-                        
-                        file_extension = ".pdf" if "pdf" in uploaded_file.type else ".jpg"
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-                            temp_file.write(uploaded_file.getvalue())
-                            temp_path = temp_file.name
+                        # #2 — Pre-check (type + size)
+                        pre_err = dp.validate_upload(uploaded_file.name, uploaded_file.size)
+                        if pre_err:
+                            st.error(f"⚠️ **Pre-check failed:** {pre_err}")
+                        else:
+                            # #3 — AI extraction via shared service
+                            extracted = dp.extract_with_gemini(
+                                genai_client, model,
+                                uploaded_file.getvalue(),
+                                mime_type=uploaded_file.type,
+                                filename=uploaded_file.name,
+                            )
+                            if extracted["error"]:
+                                err = extracted["error"]
+                                st.error(f"⚠️ **Scanner Error:** {err}")
+                                if "400" in err and "pages" in err.lower():
+                                    st.warning("🔒 **Document Locked!** This PDF is encrypted with a password. Please open it on your computer, hit 'Print', save it as an unlocked PDF, and upload that copy.")
+                            else:
+                                # #4 — Schema validation + reconciliation
+                                clean_txns, warnings = dp.validate_transactions(extracted["transactions"])
+                                for w in warnings:
+                                    st.warning(w)
+                                rec = dp.reconcile(clean_txns, extracted["opening_balance"], extracted["closing_balance"])
+                                if rec["status"] == "mismatch":
+                                    st.warning(f"⚖️ {rec['message']}")
 
-                        gemini_file = genai_client.upload_file(path=temp_path, mime_type=uploaded_file.type)
-                        response = model.generate_content([prompt, gemini_file])
-                        
-                        match = re.search(r'\[.*\]', response.text, re.DOTALL)
-                        if match:
-                            extracted_data = json.loads(match.group(0))
-                            
-                            if len(extracted_data) > 0:
-                                new_transactions = []
-                                raw_anomaly_data = [] # ✨ NEW: Store unencrypted expenses for the Anomaly Engine
-                                
-                                current_extraction_time = datetime.now().strftime("%H:%M:%S")
-                                
-                                for txn in extracted_data:
-                                    raw_date = str(txn.get("date", "")).strip()
-                                    
-                                    if len(raw_date) == 10: 
-                                        final_date = f"{raw_date} {current_extraction_time}"
-                                    elif "00:00:00" in raw_date: 
-                                        final_date = raw_date.replace("00:00:00", current_extraction_time)
-                                    elif raw_date == "": 
-                                        final_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    else: 
-                                        final_date = raw_date
-                                        
-                                    raw_desc = str(txn.get("desc", "Unknown")).title()
-                                    amount_val = float(txn.get("amount", 0.0))
-                                    category_val = txn.get("category", "Other")
-                                    type_val = txn.get("type", "Expense")
-                                        
-                                    new_transactions.append({
-                                        "user_id": st.session_state.user_id,
-                                        "account_id": account_id, 
-                                        "transaction_time": final_date,
-                                        "description": encrypt_data(raw_desc),
-                                        "amount": amount_val,
-                                        "category": category_val,
-                                        "type": type_val
-                                    })
-                                    
-                                    # Only queue expenses for the anomaly check
-                                    if type_val == "Expense":
-                                        raw_anomaly_data.append({
-                                            "amount": amount_val,
-                                            "category": category_val,
-                                            "desc": raw_desc,
-                                            "date": final_date
-                                        })
-                                        
-                                # Insert all data securely into Supabase
-                                supabase.table("transactions").insert(new_transactions).execute()
-                                
-                                # ✨ NEW: Fire the Anomaly Engine for all scanned expenses!
-                                if raw_anomaly_data:
+                                # Fetch user profile for anomaly alerts
+                                user_email, user_name = None, "User"
+                                try:
                                     user_res = supabase.table("profiles").select("email, full_name").eq("id", st.session_state.user_id).execute()
                                     if user_res.data:
                                         user_email = user_res.data[0].get("email")
                                         raw_name = user_res.data[0].get("full_name")
                                         user_name = raw_name.split(" ")[0] if raw_name else "User"
-                                        
-                                        for raw_txn in raw_anomaly_data:
-                                            check_and_alert_anomaly(
-                                                supabase=supabase,
-                                                user_id=st.session_state.user_id,
-                                                user_email=user_email,
-                                                user_name=user_name,
-                                                amount=raw_txn["amount"],
-                                                category=raw_txn["category"],
-                                                description=raw_txn["desc"],
-                                                transaction_time_iso=raw_txn["date"],
-                                                account_name=primary_acc['account_name']
-                                            )
-                                
-                                st.session_state.show_scanner = False
-                                st.success(f"✅ Successfully extracted and synced {len(new_transactions)} transactions using {target_model}!")
-                                time.sleep(1.5)
-                                st.rerun()
-                            else:
-                                st.warning("Could not find any clear transactions in this document.")
-                        else:
-                            st.error("AI could not format the output correctly. Please try a clearer document.")
-                            
+                                except Exception:
+                                    pass
+
+                                # #5 — Dedup + persist + anomaly alerts
+                                if not clean_txns:
+                                    st.warning("Could not find any clear transactions in this document.")
+                                else:
+                                    res = dp.persist_with_dedup(
+                                        supabase,
+                                        st.session_state.user_id,
+                                        user_email,
+                                        user_name,
+                                        account_id,
+                                        primary_acc['account_name'],
+                                        clean_txns,
+                                    )
+                                    if res["error"]:
+                                        st.error(f"⚠️ **Sync Error:** {res['error']}")
+                                    else:
+                                        st.session_state.show_scanner = False
+                                        label = f"✅ Successfully extracted and synced {res['inserted']} transactions using {target_model}!"
+                                        if res["duplicates"]:
+                                            label += f" ({res['duplicates']} duplicates skipped)"
+                                        st.success(label)
+                                        time.sleep(1.5)
+                                        st.rerun()
                     except Exception as e:
                         error_msg = str(e)
                         st.error(f"⚠️ **Scanner Error:** {error_msg}")
                         if "400" in error_msg and "pages" in error_msg.lower():
                             st.warning("🔒 **Document Locked!** This PDF is encrypted with a password. Please open it on your computer, hit 'Print', save it as an unlocked PDF, and upload that copy.")
-                    
-                    finally:
-                        if gemini_file:
-                            try: genai_client.delete_file(gemini_file.name)
-                            except: pass
-                        if temp_path and os.path.exists(temp_path):
-                            try: os.remove(temp_path)
-                            except: pass
         st.write("---")
 
     # --- SECTION: OVERVIEW AND CHART ---

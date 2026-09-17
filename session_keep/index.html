@@ -64,10 +64,13 @@
     try { window.parent.document.cookie = gone; } catch (e) {}
   }
 
+  // SESSION cookie (no max-age): deleted when the browser closes. This is what
+  // makes "close the app completely and reopen" start from the landing page —
+  // there is simply no session cookie to restore from on a fresh browser run.
   function writeCookie(s) {
     var secure = /^https:/i.test(window.location.protocol || "") ? "; Secure" : "";
     var c = COOKIE + "=" + encodeURIComponent(s) +
-            "; path=/; SameSite=Lax; max-age=2419200" + secure;
+            "; path=/; SameSite=Lax" + secure;
     try { document.cookie = c; } catch (e) {}
     try { window.parent.document.cookie = c; } catch (e) {}
   }
@@ -88,6 +91,13 @@
     try { window.localStorage.setItem(KEY, store); } catch (e) {}
     writeCookie(store);
   }
+
+  // The session cookie is SESSION-scoped (no max-age) on purpose: it survives a
+  // same-tab REFRESH (same browser session — the F5 case) but is deleted when
+  // the BROWSER closes, so reopening the app after closing it starts logged-out
+  // and forces authentication again. localStorage mirrors the blob but is only
+  // ever trusted on a reload (the host gates it on navType=="reload"), so it
+  // can never resurrect a session across a browser restart.
 
   // How THIS document was loaded: "reload" = F5 / Ctrl+R (a same-tab refresh;
   // the user wants to stay on the same page), "navigate" = a typed URL or an

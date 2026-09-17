@@ -18,6 +18,7 @@ from engines import tax_engine
 from utils.currency import (DEFAULT_CODE, fmt_money, symbol, to_display)
 from services.database import get_db_service
 from services.fire_service import get_fire_service
+from services.market_data_service import live_price
 from services.networth_service import get_networth_service
 from services.portfolio_service import get_portfolio_service
 from services.tax_service import get_tax_service
@@ -50,6 +51,9 @@ _MONEY_SPECS: Dict[str, object] = {
     "fire_status": {"future_monthly_expense", "annual_expense_at_retirement",
                     "required_corpus", "median_corpus", "p5_corpus",
                     "p95_corpus", "shortfall_vs_median"},
+    # NOTE: market_indices intentionally ABSENT — NIFTY points / USD-per-oz /
+    # FX rates are not money amounts and must never go through to_display()
+    # (a USD-display user would get an index level "converted" by the FX rate).
 }
 
 
@@ -253,6 +257,37 @@ def tool_spending_summary(supabase: Client, user_id: str) -> Dict:
     }
 
 
+# (ticker, display name, unit) — India-relevant references. Index levels are in
+# POINTS (never a ₹ amount); Gold is USD per troy ounce; USD/INR is a rate.
+# The explicit `unit` stops the model from prefixing an index with ₹.
+MARKET_TICKERS = [
+    ("^NSEI", "NIFTY 50", "points"),
+    ("^BSESN", "BSE Sensex", "points"),
+    ("GC=F", "Gold", "usd_per_troy_oz"),
+    ("INR=X", "USD/INR", "inr_per_usd"),
+]
+
+
+def tool_market_indices(supabase: Client, user_id: str) -> Dict:
+    """Live market snapshot — indices, gold, USD/INR. Fetched via the same
+    yfinance service the Portfolio page uses (per-day cached, never throws);
+    degrades to no_data when offline so the chat never crashes on market talk."""
+    indices = []
+    for ticker, name, unit in MARKET_TICKERS:
+        p = live_price(ticker)
+        if p:
+            indices.append({"name": name, "ticker": ticker, "unit": unit,
+                            "price": p["price"], "as_of": p["as_of"]})
+    return {
+        "status": "ok" if indices else "no_data",
+        "indices": indices,
+        "note": ("Prices are live market quotes from Yahoo Finance. "
+                 "NIFTY/Sensex are index POINTS (not currency); gold is USD per "
+                 "troy ounce; USD/INR is the exchange rate. Reference prices, "
+                 "not buy/sell quotes."),
+    }
+
+
 TOOL_REGISTRY: Dict[str, Tuple[str, Callable]] = {
     "tax_calculator": ("Income-tax comparison (old vs new regime)",
                        tool_tax_calculator),
@@ -262,6 +297,8 @@ TOOL_REGISTRY: Dict[str, Tuple[str, Callable]] = {
     "net_worth": ("Net worth / balance sheet", tool_net_worth),
     "fire_status": ("FIRE (retirement) readiness", tool_fire_status),
     "spending_summary": ("Recent monthly spending", tool_spending_summary),
+    "market_indices": ("Live market snapshot (indices, gold, FX)",
+                       tool_market_indices),
 }
 
 

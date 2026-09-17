@@ -823,24 +823,49 @@ except Exception:
 if (not st.session_state.logged_in
         and not _persist_clear_requested
         and not (_recovery_folded or _recovery_consumed)
-        and _keeper.get("session")):
+        and _keeper.get("session")
+        # localStorage survives browser restarts (the session cookie does not),
+        # so it must only ever be trusted on a same-tab RELOAD — never on a
+        # fresh visit, where the user has to re-authenticate. Without this gate
+        # a reopened app would silently resurrect the old session from the
+        # localStorage mirror and skip the landing page again.
+        and (_keeper.get("navType") in ("reload", "back_forward"))):
     # Cookie was unavailable but the localStorage mirror survived — restore from
     # it; the end-of-script write re-creates the cookie too.
     _restore_session_from(_keeper["session"])
 
 # ── Fresh visit vs refresh ─────────────────────────────────────────────────
 # The browser reports how this document was loaded: "reload" (F5 / Ctrl+R) vs
-# "navigate" (typed URL / app reopened after closing). The cookie fast-path
-# restored the last page on run 1 either way so a refresh resumes instantly
-# with no flash — but a genuinely fresh visit must land on the landing page,
-# not the module the user left open last time. This correction runs before the
-# sidebar radio renders, so the landing page is what actually shows.
+# "navigate" (typed URL / app reopened after closing). A REFRESH keeps the
+# logged-in session and the page the user was on. A genuinely FRESH visit (the
+# app was closed and reopened, or the address was typed in a new tab) must NOT
+# silently re-authenticate and drop the user onto a module — it starts over from
+# the landing page and requires authentication again. This correction runs
+# before the sidebar radio renders, so the landing page is what actually shows.
 _nav_kind = (_keeper or {}).get("navType")
 if (not st.session_state.get("_fresh_nav_corrected")
         and _nav_kind and _nav_kind not in ("reload", "back_forward")
         and st.session_state.logged_in):
+    # Force re-authentication: clear the whole auth state so the landing page
+    # (not the Dashboard) is what a fresh visit shows. This is the key part the
+    # old code got wrong — it only reset sidebar_choice to the Dashboard, which
+    # kept the restored session alive, skipped the landing + login form, and
+    # then wrote "Dashboard" back to the persisted blob, poisoning every later
+    # refresh into also landing on the Dashboard.
+    for key in ['logged_in', 'user_email', 'user_id', 'show_auth_page',
+                'editing_account', 'force_page', 'ai_consent',
+                'aa_consent_token', 'has_synced_this_session']:
+        st.session_state[key] = False if key in ['logged_in', 'show_auth_page', 'ai_consent', 'aa_consent_token', 'has_synced_this_session'] else ("" if key in ['user_email', 'user_id'] else None)
+    st.session_state["_auth_access"] = ""
+    st.session_state["_auth_refresh"] = ""
+    st.session_state.auth_mode = "login"
     st.session_state.sidebar_choice = _DEFAULT_PAGE
     st.session_state["_fresh_nav_corrected"] = True
+    # Wipe the persisted cookie + localStorage mirror this run, and make the
+    # NEXT run skip the restore block too, so the stale blob can never log the
+    # user back in.
+    _persist_clear_requested = True
+    st.session_state._persist_clear = True
 
 def go_to_auth():
     st.session_state.show_auth_page = True

@@ -3,14 +3,29 @@ Insurance Advisor — personalised policy recommendations.
 
 Collects a quick 5-field profile (age, dependents, smoking, income, existing
 cover) and recommends the best-fitting real Indian term-life and health
-insurance policies from a curated market database.  Policies are scored and
-ranked by fit, not shown in a static order.  Every policy card shows a Google
-search link to buy or compare.  An optional Gemini-powered note explains the
+insurance policies from TWO sources:
+
+1. **Live web search** (when a `TAVILY_API_KEY` is configured) — Tavily Search
+   API fetches the *latest* term-life and health plans at request time, ranked
+   per-user by `services/insurance_search.py`. Premiums shown are parsed from
+   each result's own snippet — never invented.
+2. **Curated market database** (fallback) — today's 8 term + 8 health Indian
+   policies, scored and ranked by fit when the key is missing, Tavily is down,
+   or a search comes back empty.
+
+Cover sizing uses the user's real financial picture — holdings (bank balances +
+investments) and liabilities from the net-worth snapshot — so the recommended
+term cover clears their actual debts on top of income replacement. Every card
+links out so the user can compare or buy. An optional Gemini note explains the
 overall strategy.
 """
+import datetime
 import streamlit as st
 import pandas as pd
+from urllib.parse import quote_plus
 
+import services.insurance_search as ins
+from services.networth_service import get_networth_service
 from utils.ai_client import get_gemini_client, get_best_model, generate_content_safe
 from utils.ai_persona import persona_and_currency_note
 from utils.currency import fmt_money
@@ -197,28 +212,7 @@ def _health_premium(policy: dict, cover: float, dependents: int,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RECOMMENDED COVERAGE CALCULATION
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _recommended_term(annual_income: float, dependents: int,
-                      existing_cover: float) -> float:
-    """Recommended term life cover in ₹."""
-    multiplier = 15 + min(dependents, 5)
-    raw = annual_income * multiplier - existing_cover
-    return max(5_00_000, round(raw, -5))  # floor ₹5L, round to nearest ₹1L
-
-
-def _recommended_health(dependents: int, metro: bool,
-                        existing_cover: float) -> float:
-    """Recommended health cover in ₹."""
-    base = 25_00_000 if metro else 15_00_000
-    dep_add = dependents * 5_00_000
-    raw = base + dep_add - existing_cover
-    return max(5_00_000, round(raw, -5))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# POLICY MATCHING & RANKING
+# POLICY MATCHING & RANKING (curated fallback)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _term_match_score(policy: dict, age: int, smoker: bool,
@@ -266,6 +260,102 @@ def _best_policies(policies: list, rank_fn, top_n: int = 3) -> list:
     scored = [(rank_fn(p), p) for p in policies]
     scored.sort(key=lambda x: x[0])
     return [p for _, p in scored[:top_n]]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CARD RENDERING HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _esc(s) -> str:
+    """Escape text before it's injected into an HTML card. Live web titles and
+    snippets come from the open web — never trust their markup."""
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def _display_name(name) -> str:
+    """Keep properly-cased titles as-is; title-case only the ALL-CAPS titles
+    the search API sometimes returns ("BEST TERM PLANS 2026" → "Best Term Plans 2026")."""
+    n = str(name or "").strip()
+    if not n:
+        return n
+    if n.isupper() or n.islower():
+        return n.title()
+    return n
+
+
+def _render_policy_card(col, i, card):
+    """One policy card inside the given column. `card` fields:
+        name, provider, pill  → shown under the provider
+        premium_html          → top-right (already-formed HTML)
+        url, explain          → 'View Plan' link + 'Why this policy' expander
+        meta                  → optional caption ('source · updated …')
+    """
+    with col.container(border=True):
+        c1, c2 = st.columns([2.5, 1.5])
+        with c1:
+            badge = f"#{i+1} Best Fit" if i == 0 else ""
+            if badge:
+                st.markdown(
+                    f"<span style='background:var(--primary-color);color:#fff;"
+                    f"padding:2px 8px;border-radius:10px;font-size:.7rem;"
+                    f"font-weight:700'>{badge}</span>",
+                    unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-weight:800;font-size:1.05rem;"
+                f"color:var(--text-color)'>{_esc(card['name'])}</div>",
+                unsafe_allow_html=True)
+            st.caption(f"by {_esc(card['provider'])}")
+            st.markdown(
+                f"<div style='background:var(--secondary-background-color);"
+                f"border:1px solid rgba(150,150,150,.2);"
+                f"color:var(--primary-color);padding:3px 10px;border-radius:12px;"
+                f"font-size:.73rem;font-weight:700;margin-top:4px;"
+                f"display:inline-block'>✓ {_esc(card['pill'])}</div>",
+                unsafe_allow_html=True)
+            if card.get("meta"):
+                st.caption(card["meta"])
+        with c2:
+            st.markdown(
+                f"<div style='text-align:right;font-weight:800;font-size:1.15rem;"
+                f"color:var(--text-color);margin-bottom:6px'>{card['premium_html']}</div>",
+                unsafe_allow_html=True)
+            st.link_button("View Plan →", url=card["url"],
+                           use_container_width=True)
+            with st.expander("Why this policy for you?", expanded=(i == 0)):
+                st.caption(card["explain"])
+
+
+def _curated_card(p, premium_html, category) -> dict:
+    """Turn a curated DB policy into a card dict (Google search link, as today)."""
+    url = ("https://www.google.com/search?q=" + quote_plus(
+        f"{p['name']} {p['provider']} {category} insurance"))
+    return {
+        "name": p["name"], "provider": p["provider"],
+        "pill": p["feature_head"], "premium_html": premium_html,
+        "url": url, "explain": p["explain"], "meta": None,
+    }
+
+
+def _live_card(p) -> dict:
+    """Turn a live web-search result into a card dict (real URL + snippet)."""
+    name = _display_name(p.get("name") or p.get("title") or "Plan")
+    provider = p.get("provider") or "Insurer"
+    snippet = (p.get("snippet") or "").strip()
+    pill = snippet if len(snippet) <= 90 else snippet[:90].rsplit(" ", 1)[0] + "…"
+    url = p.get("url") or ("https://www.google.com/search?q="
+                           + quote_plus(p.get("title") or name))
+    meta_parts = [str(x) for x in (p.get("source"),) if x]
+    if p.get("page_age"):
+        meta_parts.append(f"updated {p['page_age']}")
+    return {
+        "name": name, "provider": provider, "pill": pill or "No summary",
+        "premium_html": _esc(p.get("premium") or "—"),
+        "url": url,
+        "explain": snippet or "This result had no description — open the link "
+                              "to compare providers.",
+        "meta": " · ".join(meta_parts) or None,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -322,6 +412,8 @@ def render_page(supabase):
                 st.session_state.user_existing_cover = existing_cover
                 st.session_state.profile_saved = True
                 st.session_state.ai_advice = None
+                # A changed profile re-sizes cover and MUST re-run the web search.
+                st.session_state.pop("insurance_live", None)
                 st.rerun()
         return
 
@@ -360,6 +452,18 @@ def render_page(supabase):
             st.rerun()
         return
 
+    # ── 2b. NET WORTH SNAPSHOT (holdings & liabilities) ───────────────────────
+    # Never throws — compute_networth zero-fills when tables/rows are missing.
+    nw = {}
+    try:
+        nw = get_networth_service(supabase).compute_networth(user_id) or {}
+    except Exception as e:
+        print(f"[insurance] net worth fetch failed: {e}")
+    fin_assets = (float(nw.get("liquid_assets") or 0)
+                  + float(nw.get("investments_total") or 0))
+    liab_total = float(nw.get("total_liabilities") or 0)
+    liab_count = len(nw.get("liabilities_breakdown") or [])
+
     # ── 3. INFERENCE ───────────────────────────────────────────────────────────
     df = pd.DataFrame(txns)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
@@ -371,21 +475,73 @@ def render_page(supabase):
                      else total_income * 12)
 
     # ── 4. RECOMMENDED COVERS ──────────────────────────────────────────────────
-    rec_term = _recommended_term(annual_income, st.session_state.user_dependents,
-                                 st.session_state.user_existing_cover)
-    rec_health = _recommended_health(st.session_state.user_dependents,
-                                    metro=True,
-                                    existing_cover=st.session_state.user_existing_cover)
+    rec_term, term_note = ins.recommend_term_cover(
+        annual_income, st.session_state.user_dependents,
+        st.session_state.user_existing_cover, nw)
+    rec_health = ins.recommend_health_cover(
+        st.session_state.user_dependents, metro=True,
+        existing_cover=st.session_state.user_existing_cover)
 
-    # ── 5. RANK POLICIES ───────────────────────────────────────────────────────
+    # ── 5. POLICIES: LIVE SEARCH → CURATED FALLBACK, PER CATEGORY ─────────────
     def _tf(p): return _term_match_score(p, st.session_state.user_age,
                                          st.session_state.user_smoker == "Yes",
                                          annual_income, rec_term)
     def _hf(p): return _health_match_score(p, st.session_state.user_dependents,
                                            st.session_state.user_smoker == "Yes",
                                            rec_health)
-    best_term  = _best_policies(TERM_POLICIES,  _tf, top_n=3)
-    best_health = _best_policies(HEALTH_POLICIES, _hf, top_n=3)
+    curated_term = _best_policies(TERM_POLICIES, _tf, top_n=3)
+    curated_health = _best_policies(HEALTH_POLICIES, _hf, top_n=3)
+    profile_ctx = {"age": st.session_state.user_age,
+                   "dependents": st.session_state.user_dependents,
+                   "smoker": st.session_state.user_smoker == "Yes",
+                   "annual_income": annual_income}
+
+    cached = st.session_state.get("insurance_live")
+    if cached:
+        # Reuse this session's live results (refreshed only on demand).
+        best_term = cached.get("term") or []
+        best_health = cached.get("health") or []
+        live_as_of = cached.get("as_of", "")
+        term_is_live = bool(best_term)
+        health_is_live = bool(best_health)
+        if not term_is_live:
+            best_term = curated_term         # category came back empty last time
+        if not health_is_live:
+            best_health = curated_health
+        is_live = term_is_live or health_is_live
+        live_caption = "" if is_live else (
+            "No live results came back just now — showing today's curated picks instead.")
+    else:
+        key = ins.get_search_key()
+        if key:
+            with st.spinner("Searching the web for the latest term life "
+                            "& health plans…"):
+                cand = ins.search_policies(key, profile_ctx)
+            best_term = ins.rank_policies(cand.get("term") or [], profile_ctx, "term")
+            best_health = ins.rank_policies(cand.get("health") or [], profile_ctx, "health")
+            term_is_live = bool(best_term)
+            health_is_live = bool(best_health)
+            is_live = term_is_live or health_is_live
+            if is_live:
+                live_as_of = datetime.datetime.now().strftime("%d %b %Y · %I:%M %p")
+                # Cache the live lists; empty categories fall back on next render.
+                st.session_state.insurance_live = {
+                    "as_of": live_as_of,
+                    "term": best_term if term_is_live else [],
+                    "health": best_health if health_is_live else [],
+                }
+                live_caption = ""
+            else:
+                best_term, best_health = curated_term, curated_health
+                live_as_of = ""
+                live_caption = ("No live results came back just now — showing "
+                                "today's curated picks instead.")
+        else:
+            best_term, best_health = curated_term, curated_health
+            is_live = term_is_live = health_is_live = False
+            live_as_of = ""
+            live_caption = ("Live web search is off — add a free `TAVILY_API_KEY` "
+                            "to `.streamlit/secrets.toml` to see today's latest plans.")
 
     # ── 6. HEADER ──────────────────────────────────────────────────────────────
     hc1, hc2 = st.columns([4, 1])
@@ -396,11 +552,33 @@ def render_page(supabase):
         st.subheader(f"Recommendations for a {age_str}-year-old {smoke_str} "
                      f"with {dep_str} dependent{'s' if dep_str != 1 else ''}")
         st.caption(f"Primary account analysed: **{acc_name}**")
+        if is_live:
+            st.caption(f"🌐 **Live web search** · updated {live_as_of}")
+        # Make the holdings/liabilities personalization visible.
+        basis = []
+        if fin_assets > 0:
+            basis.append(f"{fmt_money(fin_assets)} in financial assets "
+                         "(bank balances + investments)")
+        if liab_total > 0:
+            basis.append(f"{fmt_money(liab_total)} in liabilities across "
+                         f"{liab_count} loan{'s' if liab_count != 1 else ''}")
+        if basis:
+            st.caption("ℹ️ **Personalization basis:** " + "; ".join(basis)
+                       + " — your term cover is sized to clear these exact debts "
+                         "minus what your assets already handle.")
     with hc2:
         if st.button("✏️ Edit Profile"):
             st.session_state.profile_saved = False
             st.session_state.ai_advice = None
+            st.session_state.pop("insurance_live", None)
             st.rerun()
+        if is_live:
+            if st.button("🔄 Refresh live recommendations"):
+                st.session_state.pop("insurance_live", None)
+                st.rerun()
+
+    if live_caption:
+        st.caption(live_caption)
 
     st.write("---")
 
@@ -408,12 +586,24 @@ def render_page(supabase):
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Term Life Cover", fmt_money(rec_term))
     m2.metric("Health Cover", fmt_money(rec_health))
-    m3.metric("Est. Term Premium", fmt_money(_term_premium(best_term[0], rec_term,
-              st.session_state.user_age, st.session_state.user_smoker == "Yes"))
-              + "/mo" if best_term else "—")
-    m4.metric("Est. Health Premium", fmt_money(_health_premium(best_health[0], rec_health,
-              st.session_state.user_dependents, st.session_state.user_smoker == "Yes",
-              True)) + "/mo" if best_health else "—")
+    if term_is_live:
+        m3.metric("Top Term Premium (live)",
+                  (best_term[0] or {}).get("premium") or "—")
+    else:
+        m3.metric("Est. Term Premium",
+                  fmt_money(_term_premium(best_term[0], rec_term,
+                            st.session_state.user_age,
+                            st.session_state.user_smoker == "Yes"))
+                  + "/mo" if best_term else "—")
+    if health_is_live:
+        m4.metric("Top Health Premium (live)",
+                  (best_health[0] or {}).get("premium") or "—")
+    else:
+        m4.metric("Est. Health Premium",
+                  fmt_money(_health_premium(best_health[0], rec_health,
+                            st.session_state.user_dependents,
+                            st.session_state.user_smoker == "Yes", True))
+                  + "/mo" if best_health else "—")
 
     st.write("---")
 
@@ -440,54 +630,36 @@ def render_page(supabase):
 
             with st.expander("How we calculated this"):
                 multiplier = 15 + min(st.session_state.user_dependents, 5)
-                st.caption(f"• **Income multiple:** {multiplier}× annual income "
-                           f"({fmt_money(annual_income)}/yr × {multiplier})")
+                st.caption(f"• **Income replacement:** {multiplier}× annual income "
+                           f"({fmt_money(annual_income)}/yr × {multiplier}) = "
+                           f"{fmt_money(annual_income * multiplier)}")
+                if liab_total > 0:
+                    st.caption(f"• **+ liabilities you'd clear:** "
+                               f"+{fmt_money(liab_total)} "
+                               f"({liab_count} loan{'s' if liab_count != 1 else ''})")
+                if fin_assets > 0:
+                    st.caption(f"• **− financial assets that already help:** "
+                               f"−{fmt_money(fin_assets)} (bank balances + investments)")
                 if st.session_state.user_existing_cover > 0:
                     st.caption(f"• **Existing cover deducted:** "
                                f"−{fmt_money(st.session_state.user_existing_cover)}")
+                if term_note:
+                    st.caption(term_note)
 
             st.markdown("#### ✨ Best Matches for You")
 
             for i, p in enumerate(best_term):
-                premium = _term_premium(p, rec_term, st.session_state.user_age,
-                                        st.session_state.user_smoker == "Yes")
-                with st.container(border=True):
-                    c1, c2 = st.columns([2.5, 1.5])
-                    with c1:
-                        badge = f"#{i+1} Best Fit" if i == 0 else ""
-                        if badge:
-                            st.markdown(
-                                f"<span style='background:var(--primary-color);color:#fff;"
-                                f"padding:2px 8px;border-radius:10px;font-size:.7rem;"
-                                f"font-weight:700'>{badge}</span>",
-                                unsafe_allow_html=True)
-                        st.markdown(
-                            f"<div style='font-weight:800;font-size:1.05rem;"
-                            f"color:var(--text-color)'>{p['name']}</div>",
-                            unsafe_allow_html=True)
-                        st.caption(f"by {p['provider']}")
-                        st.markdown(
-                            f"<div style='background:var(--secondary-background-color);"
-                            f"border:1px solid rgba(150,150,150,.2);"
-                            f"color:var(--primary-color);padding:3px 10px;border-radius:12px;"
-                            f"font-size:.73rem;font-weight:700;margin-top:4px;"
-                            f"display:inline-block'>✓ {p['feature_head']}</div>",
-                            unsafe_allow_html=True)
-                    with c2:
-                        st.markdown(
-                            f"<div style='text-align:right;font-weight:800;font-size:1.15rem;"
-                            f"color:var(--text-color);margin-bottom:6px'>"
-                            f"{fmt_money(premium)}"
-                            f"<span style='font-size:.78rem;font-weight:500;"
-                            f"opacity:.6'>/mo</span></div>",
-                            unsafe_allow_html=True)
-                        search_q = f"{p['name'].replace(' ', '+')}+" \
-                                   f"{p['provider'].replace(' ', '+')}+term+insurance"
-                        st.link_button("View Plan →",
-                                       url=f"https://www.google.com/search?q={search_q}",
-                                       use_container_width=True)
-                        with st.expander("Why this policy for you?", expanded=(i == 0)):
-                            st.caption(p["explain"])
+                if term_is_live:
+                    card = _live_card(p)
+                else:
+                    premium = _term_premium(p, rec_term, st.session_state.user_age,
+                                            st.session_state.user_smoker == "Yes")
+                    card = _curated_card(
+                        p,
+                        f"{fmt_money(premium)}<span style='font-size:.78rem;"
+                        f"font-weight:500;opacity:.6'>/mo</span>",
+                        "term")
+                _render_policy_card(left, i, card)
 
     # ---------- HEALTH ----------
     with right:
@@ -521,47 +693,19 @@ def render_page(supabase):
             st.markdown("#### ✨ Best Matches for You")
 
             for i, p in enumerate(best_health):
-                premium = _health_premium(p, rec_health,
-                                          st.session_state.user_dependents,
-                                          st.session_state.user_smoker == "Yes",
-                                          metro=True)
-                with st.container(border=True):
-                    c1, c2 = st.columns([2.5, 1.5])
-                    with c1:
-                        badge = f"#{i+1} Best Fit" if i == 0 else ""
-                        if badge:
-                            st.markdown(
-                                f"<span style='background:var(--primary-color);color:#fff;"
-                                f"padding:2px 8px;border-radius:10px;font-size:.7rem;"
-                                f"font-weight:700'>{badge}</span>",
-                                unsafe_allow_html=True)
-                        st.markdown(
-                            f"<div style='font-weight:800;font-size:1.05rem;"
-                            f"color:var(--text-color)'>{p['name']}</div>",
-                            unsafe_allow_html=True)
-                        st.caption(f"by {p['provider']}")
-                        st.markdown(
-                            f"<div style='background:var(--secondary-background-color);"
-                            f"border:1px solid rgba(150,150,150,.2);"
-                            f"color:var(--primary-color);padding:3px 10px;border-radius:12px;"
-                            f"font-size:.73rem;font-weight:700;margin-top:4px;"
-                            f"display:inline-block'>✓ {p['feature_head']}</div>",
-                            unsafe_allow_html=True)
-                    with c2:
-                        st.markdown(
-                            f"<div style='text-align:right;font-weight:800;font-size:1.15rem;"
-                            f"color:var(--text-color);margin-bottom:6px'>"
-                            f"{fmt_money(premium)}"
-                            f"<span style='font-size:.78rem;font-weight:500;"
-                            f"opacity:.6'>/mo</span></div>",
-                            unsafe_allow_html=True)
-                        search_q = f"{p['name'].replace(' ', '+')}+" \
-                                   f"{p['provider'].replace(' ', '+')}+health+insurance"
-                        st.link_button("View Plan →",
-                                       url=f"https://www.google.com/search?q={search_q}",
-                                       use_container_width=True)
-                        with st.expander("Why this policy for you?", expanded=(i == 0)):
-                            st.caption(p["explain"])
+                if health_is_live:
+                    card = _live_card(p)
+                else:
+                    premium = _health_premium(p, rec_health,
+                                              st.session_state.user_dependents,
+                                              st.session_state.user_smoker == "Yes",
+                                              metro=True)
+                    card = _curated_card(
+                        p,
+                        f"{fmt_money(premium)}<span style='font-size:.78rem;"
+                        f"font-weight:500;opacity:.6'>/mo</span>",
+                        "health")
+                _render_policy_card(right, i, card)
 
     # ── 9. AI ADVISOR NOTE ────────────────────────────────────────────────────
     st.write("---")
@@ -575,11 +719,38 @@ def render_page(supabase):
     else:
         if st.button("Generate Personalised Advice", type="primary"):
             with st.spinner("Analysing your profile with Gemini..."):
+
+                def _policy_lines(pols, live):
+                    """Live → numbered list with the snippet + any published
+                    premium; curated → plain names. Never asks Gemini to invent
+                    a figure."""
+                    if live:
+                        lines = []
+                        for n, p_ in enumerate(pols):
+                            line = (f"{n+1}. {p_.get('name') or p_.get('title')} "
+                                    f"({p_.get('provider')}) — "
+                                    f"{(p_.get('snippet') or '')[:170]}")
+                            if p_.get("premium"):
+                                line += f" | published premium: {p_['premium']}"
+                            else:
+                                line += " | no premium published"
+                            lines.append(line)
+                        return "\n".join(lines) if lines else "(none came back live)"
+                    return "\n".join(f"• {p_['name']} ({p_['provider']})"
+                                     for p_ in pols) if pols else "(none)"
+
                 smoke = "smoker" if st.session_state.user_smoker == "Yes" else "non-smoker"
-                term_names = ", ".join(p["name"] + " (" + p["provider"] + ")"
-                                       for p in best_term)
-                health_names = ", ".join(p["name"] + " (" + p["provider"] + ")"
-                                         for p in best_health)
+                term_names = _policy_lines(best_term, term_is_live)
+                health_names = _policy_lines(best_health, health_is_live)
+
+                profile_extra = ""
+                if liab_total > 0:
+                    profile_extra += (f"\n  Liabilities: {fmt_money(liab_total)} "
+                                      f"across {liab_count} loans")
+                if fin_assets > 0:
+                    profile_extra += (f"\n  Financial assets (bank balances + "
+                                      f"investments): {fmt_money(fin_assets)}")
+
                 prompt = f"""{persona_and_currency_note()}
 
 You are a sympathetic, expert Indian financial advisor. Write a short 2-paragraph
@@ -589,15 +760,24 @@ Profile:
   Age: {st.session_state.user_age}, Dependents: {st.session_state.user_dependents},
   Smoking: {smoke}, Annual Income: {fmt_money(annual_income)},
   Existing Cover: {fmt_money(st.session_state.user_existing_cover)}
+{profile_extra}
 
 Recommended Term Life Cover: {fmt_money(rec_term)}
-Top 3 term policies ranked for this person: {term_names}
+Top 3 term policies ranked for this person:
+{term_names}
 
 Recommended Health Cover: {fmt_money(rec_health)}
-Top 3 health policies ranked for this person: {health_names}
+Top 3 health policies ranked for this person:
+{health_names}
+
+GROUNDING RULE — never invent numbers. Each listed policy may carry a
+"published premium:" figure; you may quote exactly that figure if you wish.
+Never invent a premium, monthly cost, interest rate, or return rate for any
+policy — the only premium figures allowed are the ones explicitly shown above.
 
 Paragraph 1: Explain WHY this specific person needs this specific cover amount,
-referencing their income, dependents, and what would happen if they are not around.
+referencing their income, dependents, liabilities, and what would happen if they
+are not around.
 Paragraph 2: Briefly explain why the top-ranked policies suit them best (value,
 features relevant to their age/lifestyle). Be specific to THIS person — do not
 write generic advice. Keep it professional and empathetic. Use plain text, no

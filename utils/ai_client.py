@@ -65,14 +65,6 @@ def _warn(message: str):
         logger.warning(message)
 
 
-def _error(message: str):
-    """Log error in both Streamlit and standalone contexts."""
-    if HAS_STREAMLIT and st:
-        st.error(message)
-    else:
-        logger.error(message)
-
-
 if HAS_STREAMLIT:
     @st.cache_data(ttl=3600)  # Cache model list for 1 hour
     def get_available_models(_genai_client) -> List[str]:
@@ -150,6 +142,12 @@ def generate_content_safe(model, prompt: str, max_retries: int = 2) -> Optional[
     """
     Generate content with retry logic and error handling.
 
+    Returns the generated text, or None on failure. Failures are written to the
+    app/console logs only — never shown as a red Streamlit error banner —
+    because callers fall back to a deterministic answer and surface a friendly
+    note instead (a quota-exceeded or offline Gemini call shouldn't alarm the
+    user).
+
     Args:
         model: GenerativeModel instance
         prompt: The prompt to send
@@ -167,6 +165,9 @@ def generate_content_safe(model, prompt: str, max_retries: int = 2) -> Optional[
                 continue
         except Exception as e:
             if attempt == max_retries:
-                _error(f"AI generation failed after {max_retries + 1} attempts: {e}")
+                # Log for debugging, but never surface a red error banner in
+                # the UI — the caller falls back to a deterministic answer.
+                logger.error("AI generation failed after %d attempts: %s",
+                             max_retries + 1, e)
                 return None
     return None
