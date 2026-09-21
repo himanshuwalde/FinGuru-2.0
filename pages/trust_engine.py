@@ -28,7 +28,7 @@ def render_page(supabase):
     # Load Model
     model = load_ml_model()
     if model is None:
-        st.error("⚠️ **ML Model Not Found!** Please run `train_model.py` to generate the `trust_engine_model.pkl` file.")
+        st.error("⚠️ **ML Model Not Found!** Please run `train_trust_engine_model.py` to generate the `trust_engine_model.pkl` file.")
         return
 
     # --- 1. FETCH, FILTER & DECRYPT DATA ---

@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  /* FinGuru dark palette (migration spec, Section 7) */
+  --color-base: #0a0f0e;
+  --color-surface: #131a19;
+  --color-surface-hover: #1a2321;
+  --color-edge: #223029;
+  --color-ink: #eaf2ef;
+  --color-muted: #8fa39c;
+  --color-accent: #22c55e;
+  --color-accent-hover: #16a34a;
+  --color-danger: #ef4444;
+  --color-info: #38bdf8;
+  --color-on-accent: #0a0f0e;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Mono", monospace;
+}
+
+@utility numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+body {
+  @apply bg-base text-ink font-sans antialiased;
+}
+
+/* Landing page motion & texture */
+@keyframes hero-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+.hero-glow {
+  animation: hero-glow-pulse 6s ease-in-out infinite;
+}
+
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgb(34 48 41 / 0.35) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(34 48 41 / 0.35) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-glow {
+    animation: none;
+  }
+}

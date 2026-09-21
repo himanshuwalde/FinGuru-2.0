@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for d in engines services ai utils pages migrations tests scripts .streamlit; do echo \"=== $d ===\"; ls -la \"C:\\\\Projects\\\\FinGuru-2.0\\\\$d\" 2>/dev/null || echo \"\\(does not exist\\)\"; done)",
+      "Bash(for d in engines services ai utils pages migrations tests scripts .streamlit data models env .github auth_autofill_reader recovery_reader session_keep tz_reader __pycache__ .claude; do echo \"=== $d ===\"; ls -la \"C:/Projects/FinGuru-2.0/$d\" 2>/dev/null || echo \"\\(does not exist\\)\"; done)",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && wc -l app.py webhook_api.py pages/dashboard.py pages/transactions.py pages/safe_to_spend.py pages/ghost_auditor.py pages/account_aggregator.py pages/financial_twin.py pages/trust_engine.py pages/insurance.py pages/financial_guardrail.py pages/family_wealth.py pages/legacy_agent.py pages/web3_vault.py engines/networth_engine.py engines/portfolio_engine.py engines/fire_engine.py engines/tax_engine.py ai/intent_router.py ai/context_builder.py ai/prompts.py utils/anomaly_engine.py services/database.py services/insurance_search.py services/market_data_service.py services/chat_session_service.py scripts/seed_demo.py alert_engine.py 2>&1)",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && sed -E 's/=.*//' .env 2>/dev/null | grep -v '^#' | grep -v '^$'; echo \"=== secrets.toml keys ===\"; sed -E 's/=.*//; s/^\\\\[//; s/\\\\]$//' .streamlit/secrets.toml | grep -v '^#' | grep -v '^$')",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && ls .github/workflows/ && echo \"===\" && cat .github/workflows/* 2>/dev/null | head -60)",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && ls package.json package-lock.json yarn.lock pnpm-lock.yaml node_modules frontend backend Dockerfile docker-compose.yml .dockerignore 2>&1; echo \"=== find any package.json outside env ===\"; find . -name \"package.json\" -not -path \"./env/*\" -not -path \"./.git/*\" 2>/dev/null; echo \"---done---\")",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && ls pytest.ini pyproject.toml setup.cfg tox.ini conftest.py tests/conftest.py .ruff.toml ruff.toml 2>&1; echo \"===\"; cat .github/workflows/daily_alerts.yml; echo \"=== config.toml ===\"; cat .streamlit/config.toml)",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && git ls-files | head -80; echo \"=== tracked check for deletion candidates ===\"; git ls-files | grep -E \"^\\(=0\\\\.2\\\\.40|train_ai\\\\.py|expense_model\\\\.pkl|transactions_dataset\\\\.csv|credit_score\\\\.csv|train_model\\\\.py|train_model1\\\\.py|train_custom_model\\\\.py|trust_engine_model\\\\.pkl|custom_healthcare_model\\\\.joblib|\\\\.env|\\\\.streamlit/secrets\\\\.toml\\)$\"; echo \"---end---\")",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && find . -name \"indian_health_insurance_claims_dataset.csv\" 2>/dev/null; find . -name \".env.*\" -not -path \"./env/*\" 2>/dev/null; ls data/tax_rules/; echo \"---done---\")",
+      "Bash(cd \"C:/Projects/FinGuru-2.0\" && for f in auth_autofill_reader/index.html recovery_reader/index.html session_keep/index.html tz_reader/index.html; do echo \"=== $f ===\"; head -12 \"$f\"; done)",
+      "Bash(rm '=0.2.40' train_ai.py expense_model.pkl transactions_dataset.csv credit_score.csv train_model.py && mv train_model1.py train_trust_engine_model.py && mv train_custom_model.py train_healthcare_model.py && git status --short)",
+      "Bash(env/Scripts/python.exe -m pytest tests/ -q 2>&1 | tail -20)",
+      "Bash(npm -v; env/Scripts/python.exe -c \"import httpx; print\\('httpx', httpx.__version__\\)\" 2>/dev/null || echo \"httpx missing\")",
+      "Bash(npm install:*)",
+      "Bash(env/Scripts/python.exe -m pytest tests/ -q 2>&1 | tail -8)",
+      "Bash(env/Scripts/python.exe -m pytest tests/test_backend_api.py -q 2>&1 | head -60)",
+      "Bash(env/Scripts/python.exe -m pytest tests/test_backend_api.py -q 2>&1 | sed -n '60,120p')",
+      "Bash(env/Scripts/python.exe -m pytest tests/ -q 2>&1 | tail -3)",
+      "Bash(env/Scripts/python.exe -m uvicorn backend.main:app --port 8000)",
+      "Bash(npm run lint && npm run test && npm run build)",
+      "Bash(curl -s http://127.0.0.1:8000/api/health; echo; curl -s http://127.0.0.1:8000/api/track/status; echo; curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/api/auth/me; echo; curl -s http://127.0.0.1:8000/api/auth/me)",
+      "Bash(npm i:*)",
+      "Bash(node:*)",
+      "Bash(env/Scripts/python.exe -c \"\nimport os, json, base64, tomllib\nfrom dotenv import load_dotenv\nload_dotenv\\('.env'\\)\n\ndef role_of\\(k\\):\n    if not k or k.count\\('.'\\) < 2:\n        return 'NOT_A_JWT'\n    p = k.split\\('.'\\)[1]\n    p += '=' * \\(-len\\(p\\) % 4\\)\n    return json.loads\\(base64.urlsafe_b64decode\\(p\\)\\).get\\('role', 'no-role'\\)\n\nenv_key = os.environ.get\\('SUPABASE_KEY', ''\\)\nwith open\\('.streamlit/secrets.toml', 'rb'\\) as f:\n    sec = tomllib.load\\(f\\)\nsec_key = sec.get\\('SUPABASE_KEY', ''\\)\n\nprint\\('env SUPABASE_KEY role:', role_of\\(env_key\\)\\)\nprint\\('secrets.toml SUPABASE_KEY role:', role_of\\(sec_key\\)\\)\nprint\\('keys identical:', env_key == sec_key\\)\nprint\\('SUPABASE_URL present in env:', bool\\(os.environ.get\\('SUPABASE_URL'\\)\\)\\)\n\")",
+      "Bash(env/Scripts/python.exe -c \"import jwt; print\\('pyjwt', jwt.__version__\\)\" 2>/dev/null || echo \"pyjwt missing\")",
+      "Bash(env/Scripts/python.exe -c \"\nimport os\nfrom dotenv import load_dotenv\nload_dotenv\\('.env'\\)\nk = os.environ.get\\('SUPABASE_KEY', ''\\)\nprint\\('length:', len\\(k\\)\\)\nprint\\('prefix:', k[:14]\\)\nprint\\('charset sample:', sorted\\(set\\(c for c in k if not c.isalnum\\(\\)\\)\\)[:10]\\)\n\")",
+      "Bash(env/Scripts/python.exe -c \"\nimport os\nfrom dotenv import load_dotenv\nload_dotenv\\('.env'\\)\nurl = os.environ['SUPABASE_URL'].strip\\(\\).rstrip\\('/'\\)\nkey = os.environ['SUPABASE_KEY'].strip\\(\\)\nwith open\\('frontend/.env', 'w', newline='\\\\n'\\) as f:\n    f.write\\('# Auto-generated from root .env \\(gitignored\\). Only the publishable key may live here.\\\\n'\\)\n    f.write\\(f'VITE_SUPABASE_URL={url}\\\\n'\\)\n    f.write\\(f'VITE_SUPABASE_ANON_KEY={key}\\\\n'\\)\nprint\\('frontend/.env written \\(values not printed\\)'\\)\n\")",
+      "Bash(npm run lint && npm run test && npm run build 2>&1 | tail -6)",
+      "Bash(npm run:*)",
+      "Bash(tail -20 \"C:\\\\Users\\\\HIMANS~1\\\\AppData\\\\Local\\\\Temp\\\\qoder-cli\\\\C--Projects-FinGuru-2-0\\\\27dca4da-4625-47d3-b09a-6268e67e86fd\\\\tasks\\\\b1ey97dr1.output\"; echo \"---\"; netstat -ano | grep \":8000\" | head -5)",
+      "Bash"
+    ]
+  }
+}

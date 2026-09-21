@@ -322,7 +322,7 @@ def render_page(supabase):
     model_data = load_healthcare_model()
     
     if not model_data:
-        st.error("⚠️ The AI Healthcare model is not trained. Run 'python train_custom_model.py' in your terminal!")
+        st.error("⚠️ The AI Healthcare model is not trained. Run 'python train_healthcare_model.py' in your terminal!")
         return
 
     model = model_data['model']
