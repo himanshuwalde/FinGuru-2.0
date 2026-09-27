@@ -160,7 +160,11 @@
       "PowerShell(python -m py_compile services/document_processing.py pages/account_aggregator.py; if \\($?\\) { \"py_compile OK\" })",
       "PowerShell(python -m pytest tests/test_document_processing.py -q 2>&1 | Select-Object -Last 30)",
       "PowerShell(python -m pytest tests/ -q 2>&1 | Select-Object -Last 8)",
-      "PowerShell(python -m py_compile services/document_processing.py; if \\($?\\) { \"py_compile OK\" })"
+      "PowerShell(python -m py_compile services/document_processing.py; if \\($?\\) { \"py_compile OK\" })",
+      "Bash(npm create *)",
+      "Bash(npx create-vite@latest *)",
+      "Bash(mkdir -p frontend)",
+      "Bash(npm init *)"
     ]
   }
 }
