@@ -1,4 +1,4 @@
-"""Verify Supabase access tokens (RS256) against the project's JWKS."""
+"""Verify Supabase access tokens (RS256 or ES256) against the project's JWKS."""
 import jwt
 from jwt import PyJWKClient
 
@@ -34,10 +34,12 @@ def verify_access_token(token: str) -> AuthUser:
     try:
         client = get_jwk_client()
         signing_key = client.get_signing_key_from_jwt(token)
+        # Supabase projects may use RS256 or ES256 depending on the project config.
+        # Allow both — the JWKS key type determines which algorithm is used.
         claims = jwt.decode(
             token,
             signing_key.key,
-            algorithms=["RS256"],
+            algorithms=["RS256", "ES256"],
             options={"verify_aud": False},
         )
     except TokenVerificationError:

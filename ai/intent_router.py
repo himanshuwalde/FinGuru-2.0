@@ -14,6 +14,24 @@ from typing import Dict, List
 # (intent, [keywords that trigger it]) — checked in order, first match wins.
 # General-knowledge intents come first so their broader keywords win when present.
 INTENT_RULES: List[tuple[str, List[str]]] = [
+    # --- AI CFO specific intents (more specific, checked first) ---
+    ("affordability", [
+        "can i afford", "can we afford", "can afford", "afford",
+        "can i get", "can we get", "enough money", "saving for",
+        "how long to save", "will i have", "can i pay", "can we pay",
+        "monthly budget", "safe to spend", "daily allowance",
+    ]),
+    ("portfolio_scorecard", [
+        "portfolio score", "scorecard", "concentration", "benchmark",
+        "portfolio health", "how is my portfolio", "portfolio analysis",
+        "single holding", "diversification", "allocation score",
+    ]),
+    ("stock_lookup", [
+        "stock price", "share price", "live price", "current price",
+        "ticker", "price of", "what is the price", "price today",
+        "stock lookup", "look up", "quote",
+    ]),
+    # --- Original intents (preserve backward compatibility) ---
     ("market", [
         "market update", "stock market", "nifty", "sensex", "gold price",
         "market today", "market news", "share market", "crude oil", "usd inr",
@@ -50,6 +68,13 @@ INTENT_RULES: List[tuple[str, List[str]]] = [
         "cashflow", "cash flow", "monthly", "overspend", "where does my money",
         "money go", "money going",
     ]),
+    # --- General knowledge fallback (checked last) ---
+    ("general_knowledge", [
+        "what is", "explain", "difference between", "how does",
+        "what does", "tell me about", "compare", "vs ", "versus",
+        "difference between", "what is the difference", "how do",
+        "what are", "why is", "when is", "who is", "where is",
+    ]),
 ]
 
 
@@ -69,17 +94,22 @@ def route_intent(user_message: str) -> str:
 
 # Tools loaded for each intent. `general` pulls a compact view of everything.
 INTENT_TOOLS: Dict[str, List[str]] = {
-    "market":     ["market_indices", "portfolio_summary"],
-    "advice":     ["portfolio_summary", "net_worth", "spending_summary",
-                   "market_indices"],
-    "tax_saving": ["tax_calculator", "tax_saving_opportunities"],
-    "tax":        ["tax_calculator", "tax_saving_opportunities"],
-    "portfolio":  ["portfolio_summary", "net_worth"],
-    "net_worth":  ["net_worth"],
-    "fire":       ["fire_status", "net_worth"],
-    "spending":   ["spending_summary", "net_worth"],
-    "general":    ["spending_summary", "net_worth", "portfolio_summary",
-                   "fire_status", "tax_calculator", "market_indices"],
+    "market":               ["market_indices", "portfolio_summary"],
+    "advice":               ["portfolio_summary", "net_worth", "spending_summary",
+                              "market_indices"],
+    "tax_saving":           ["tax_calculator", "tax_saving_opportunities"],
+    "tax":                  ["tax_calculator", "tax_saving_opportunities"],
+    "portfolio":            ["portfolio_summary", "net_worth"],
+    "net_worth":            ["net_worth"],
+    "fire":                 ["fire_status", "net_worth"],
+    "spending":             ["spending_summary", "net_worth"],
+    "general":              ["spending_summary", "net_worth", "portfolio_summary",
+                              "fire_status", "tax_calculator", "market_indices"],
+    # --- AI CFO specific ---
+    "affordability":        ["affordability_checker"],
+    "portfolio_scorecard":  ["portfolio_scorecard"],
+    "stock_lookup":         ["stock_lookup"],
+    "general_knowledge":    ["general_knowledge"],
 }
 
 TOOL_DESCRIPTIONS: Dict[str, str] = {

@@ -22,3 +22,10 @@ class PillarStatus(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     service: str = "finguru-api"
+
+
+class SuccessBody(BaseModel):
+    response: str
+    intent: str | None = None
+    grounding: dict | None = None
+    used_ai: bool | None = None

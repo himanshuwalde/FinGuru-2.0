@@ -62,7 +62,6 @@ export function TrackPage() {
 
   const d = data!;
   const netDelta = d.net.mom_pct ?? 0;
-  const incomeDelta = d.income.mom_pct ?? 0;
   const expenseDelta = d.expense.mom_pct ?? 0;
 
   // Convert cashflow to CashflowChart format: { month, value }

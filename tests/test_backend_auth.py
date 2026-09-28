@@ -104,3 +104,39 @@ def test_me_rejects_token_signed_by_foreign_key(monkeypatch):
     response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 401
     assert response.json()["error"]["message"] == "Invalid or expired token"
+
+
+def test_me_accepts_es256_token(monkeypatch):
+    """Verify the backend accepts ES256 tokens (the algorithm Supabase actually uses)."""
+    # Install the RSA-based fake JWKS (as the test does) — but verify the verify_access_token
+    # function can still validate an ES256 token by fetching the correct key from the JWKS.
+    # Since our fake JWKS only has RSA keys, an ES256 token should fail verification
+    # because the key won't match — but we want to ensure the code path attempts ES256.
+    # Instead, let's test that when we *do* have a matching ES256 key in the JWKS, it works.
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    # Generate an EC key pair
+    ec_private_key = ec.generate_private_key(ec.SECP256R1())
+    ec_private_pem = ec_private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    ec_public_pem = ec_private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    # Override the fake JWKS to return our EC public key
+    monkeypatch.setattr(tokens, "_jwk_client", _FakeJWKClient(ec_public_pem))
+
+    now = int(time.time())
+    token = pyjwt.encode(
+        {"sub": "user-123", "email": "fin@example.com", "exp": now + 3600},
+        ec_private_pem,
+        algorithm="ES256",
+        headers={"kid": "test-kid", "alg": "ES256"},
+    )
+    response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "user-123", "email": "fin@example.com"}

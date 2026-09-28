@@ -133,6 +133,38 @@ def deterministic_answer(intent: str, results: Dict[str, Dict]) -> str:
                  for ix in market["indices"]]
         lines.append("Market snapshot: " + ", ".join(parts) + ".")
 
+    # --- AI CFO specific fallbacks ---
+    afford = results.get("affordability_checker", {})
+    if afford.get("status") == "ok":
+        safe = afford.get("safe_to_spend_daily", 0)
+        lines.append(f"Safe-to-spend today: {_inr(safe)} "
+                     f"(budget {_inr(afford.get('remaining_budget', 0))} "
+                     f"left, {afford.get('days_left_in_month', 30)} days).")
+
+    scorecard = results.get("portfolio_scorecard", {})
+    if scorecard.get("status") == "ok":
+        lines.append(f"Portfolio score: {scorecard.get('health_score', '—')}/100. "
+                     f"Concentration: {scorecard.get('concentration_pct', 0):.0f}% "
+                     f"in {scorecard.get('largest_holding', '—')}.")
+        nifty = scorecard.get("nifty_price")
+        if nifty:
+            lines.append(f"NIFTY 50: {nifty:,.2f} pts.")
+
+    stock = results.get("stock_lookup", {})
+    if stock.get("status") == "ok" and stock.get("holdings"):
+        tickers = ", ".join(stock.get("holding_tickers", []))
+        lines.append(f"Your holdings: {tickers}.")
+
+    gk = results.get("general_knowledge", {})
+    if gk.get("status") == "ok":
+        topics = gk.get("topics", [])
+        if topics:
+            lines.append(f"Local lessons available: {', '.join(topics)}.")
+        elif gk.get("source") == "tavily":
+            lines.append("Web search result found — AI will cite it.")
+        else:
+            lines.append("No local lesson found — AI will use general knowledge.")
+
     if not lines:
         # General / advice / market intents give a better offline message.
         if intent in ("market", "advice", "general"):

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import backend.routers.track as track
 from backend.main import app
 from services import recommendation_service
-from tests.conftest import make_token
+from tests.conftest import make_token, make_es256_token
 
 client = TestClient(app)
 
@@ -185,3 +185,15 @@ def test_dashboard_service_unavailable_when_supabase_not_configured(fake_jwks, m
     response = client.get("/api/track/dashboard", headers={"Authorization": f"Bearer {make_token()}"})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "service_unavailable"
+
+
+def test_dashboard_happy_path_es256(es256_fake_jwks, monkeypatch):
+    """Same happy-path test but with ES256 token (what Supabase actually issues)."""
+    _install(monkeypatch)
+    response = client.get(
+        "/api/track/dashboard", headers={"Authorization": f"Bearer {make_es256_token()}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["display_name"] == "Himanshu"
+    assert body["net_worth"] == 1240500.0

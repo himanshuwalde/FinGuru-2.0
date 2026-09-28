@@ -165,7 +165,9 @@
       "Bash(npx create-vite@latest *)",
       "Bash(mkdir -p frontend)",
       "Bash(npm init *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(node *)",
+      "Bash(dir *)"
     ]
   }
 }

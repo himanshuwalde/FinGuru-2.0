@@ -9,11 +9,8 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
-  Defs,
-  LinearGradient,
-  Stop,
 } from 'recharts'
-import { cn } from '@/lib/utils'
+import { cn } from '@/lib/cn'
 
 interface DataPoint {
   month: string
@@ -35,11 +32,11 @@ const COLORS = {
   income: 'var(--color-accent-green)',
   expense: 'var(--color-accent-red)',
   net: 'var(--color-accent-blue)',
-}
+} as const
 
 const GRADIENTS = {
-  gains: 'url(#gradient-gains)',
-  losses: 'url(#gradient-losses)',
+  gains: "linear-gradient(180deg, rgba(34,197,94,0.35) 0%, rgba(34,197,94,0) 100%)",
+  losses: "linear-gradient(180deg, rgba(239,68,68,0.35) 0%, rgba(239,68,68,0) 100%)",
 }
 
 export function ChartPanel({
@@ -51,7 +48,7 @@ export function ChartPanel({
   showLegend = false,
 }: ChartPanelProps) {
   const isCashflow = type === 'cashflow'
-  const seriesColor = COLORS[type]
+  const seriesColor = isCashflow ? 'var(--color-accent-blue)' : COLORS[type]
 
   return (
     <div className={cn('card p-5', className)}>
@@ -61,29 +58,19 @@ export function ChartPanel({
         </h3>
       )}
       <div className="chart-container" style={{ height }}>
-        <Defs>
-          <LinearGradient id="gradient-gains" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0%" stopColor="rgba(34,197,94,0.35)" />
-            <Stop offset="100%" stopColor="rgba(34,197,94,0)" />
-          </LinearGradient>
-          <LinearGradient id="gradient-losses" x1="0" y1="0" x2="0" y2="1">
-            <Stop offset="0%" stopColor="rgba(239,68,68,0.35)" />
-            <Stop offset="100%" stopColor="rgba(239,68,68,0)" />
-          </LinearGradient>
-        </Defs>
         {isCashflow ? (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-              <Defs>
-                <LinearGradient id="gradient-income" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0%" stopColor="rgba(34,197,94,0.35)" />
-                  <Stop offset="100%" stopColor="rgba(34,197,94,0)" />
-                </LinearGradient>
-                <LinearGradient id="gradient-expense" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0%" stopColor="rgba(239,68,68,0.35)" />
-                  <Stop offset="100%" stopColor="rgba(239,68,68,0)" />
-                </LinearGradient>
-              </Defs>
+              <defs>
+                <linearGradient id="gradient-income" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(34,197,94,0.35)" />
+                  <stop offset="100%" stopColor="rgba(34,197,94,0)" />
+                </linearGradient>
+                <linearGradient id="gradient-expense" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(239,68,68,0.35)" />
+                  <stop offset="100%" stopColor="rgba(239,68,68,0)" />
+                </linearGradient>
+              </defs>
               <CartesianGrid
                 stroke="var(--color-border)"
                 strokeDasharray="4 4"

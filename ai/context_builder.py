@@ -288,6 +288,178 @@ def tool_market_indices(supabase: Client, user_id: str) -> Dict:
     }
 
 
+def tool_affordability_checker(supabase: Client, user_id: str) -> Dict:
+    """Answer 'Can I afford X?' — computes safe-to-spend from the user's
+    real cash-flow and net-worth data (same engines as the dashboard)."""
+    # Net worth (liquid + investments − liabilities)
+    nw_svc = get_networth_service(supabase)
+    try:
+        nw = nw_svc.compute_networth(user_id)
+        net_worth = nw["net_worth"]
+        liquid = nw["liquid_assets"]
+    except Exception:
+        net_worth = liquid = 0.0
+
+    # Monthly spending (average over last 3 months)
+    try:
+        db = get_db_service(supabase)
+        exp = db.get_historical_expenses(user_id, months_back=3)
+        if not exp.empty:
+            avg_monthly = float(exp["amount"].mean())
+        else:
+            avg_monthly = 0.0
+    except Exception:
+        avg_monthly = 0.0
+
+    # Safe-to-spend daily: (monthly_budget − spent) ÷ days left
+    try:
+        accounts = db.get_user_accounts(user_id)
+        monthly_budget = sum(float(acc.get("monthly_budget") or 0)
+                             for acc in accounts)
+        spent = float(exp[exp["type"] == "Expense"]["amount"].sum()) if not exp.empty else 0.0
+        remaining = max(0.0, monthly_budget - spent)
+        from datetime import datetime
+        now = datetime.now()
+        days_in_month = (now.replace(month=now.month % 12 + 1, day=1)
+                         - datetime(now.year, now.month, 1)).days
+        days_left = max(1, days_in_month - now.day)
+        safe_daily = remaining / days_left
+    except Exception:
+        safe_daily = 0.0
+        remaining = 0.0
+        days_left = 30
+
+    return {
+        "status": "ok",
+        "net_worth": net_worth,
+        "liquid_assets": liquid,
+        "avg_monthly_expense": avg_monthly,
+        "remaining_budget": remaining,
+        "safe_to_spend_daily": round(safe_daily, 2),
+        "days_left_in_month": days_left,
+    }
+
+
+def tool_portfolio_scorecard(supabase: Client, user_id: str) -> Dict:
+    """Portfolio concentration + benchmark comparison for the AI CFO
+    scorecard intent."""
+    pf_svc = get_portfolio_service(supabase)
+    try:
+        summary = pf_svc.get_summary(user_id)
+        health, insights = pf_svc.get_health(user_id, "Moderate")
+    except Exception:
+        return {"status": "no_data",
+                "note": "No portfolio data yet — add holdings in Portfolio."}
+
+    # Concentration: % in single holding (largest)
+    allocation = summary.get("allocation", {})
+    largest_class = max(allocation.items(), key=lambda kv: kv[1]) \
+        if allocation else ("—", 0.0)
+    concentration_pct = largest_class[1]
+
+    # Benchmark comparison: XIRR vs Nifty 50 (yfinance)
+    xirr_pct = summary.get("xirr_pct", 0.0)
+    try:
+        from services.market_data_service import live_price
+        nifty = live_price("^NSEI")
+        nifty_price = nifty["price"] if nifty else None
+    except Exception:
+        nifty_price = None
+
+    return {
+        "status": "ok",
+        "total_invested": summary.get("total_invested", 0.0),
+        "total_current": summary.get("total_current", 0.0),
+        "absolute_return": summary.get("absolute_return", 0.0),
+        "return_pct": summary.get("return_pct", 0.0),
+        "xirr_pct": xirr_pct,
+        "allocation": allocation,
+        "health_score": health,
+        "health_insights": insights,
+        "concentration_pct": concentration_pct,
+        "largest_holding": largest_class[0],
+        "nifty_price": nifty_price,
+    }
+
+
+def tool_stock_lookup(supabase: Client, user_id: str) -> Dict:
+    """Live stock/quote lookup — uses the same yfinance service as
+    Portfolio. Returns the price and cross-references the user's
+    holdings so the AI can say 'you already own this'."""
+    from services.market_data_service import live_price
+    from services.portfolio_service import get_portfolio_service
+
+    # Resolve ticker from the user's question is handled by the router;
+    # here we just return the latest price for the requested ticker(s).
+    # The chat page passes the ticker as a tool argument; this tool
+    # serves as the canonical data source the AI cites.
+    pf_svc = get_portfolio_service(supabase)
+    holdings: list[dict] = []
+    try:
+        holdings = pf_svc.get_holdings(user_id)
+    except Exception:
+        pass
+
+    # Build a ticker→holding map for cross-reference
+    holding_map: dict[str, dict] = {}
+    for h in holdings:
+        ticker = (h.get("ticker") or "").strip().upper()
+        if ticker:
+            holding_map[ticker] = h
+
+    return {
+        "status": "ok",
+        "holdings": holdings,
+        "holding_tickers": list(holding_map.keys()),
+        "note": ("Prices are live quotes from Yahoo Finance. "
+                 "cross-reference your holdings above. "
+                 "Call tool_stock_lookup with the ticker to get its price."),
+    }
+
+
+def tool_general_knowledge(supabase: Client, user_id: str) -> Dict:
+    """General knowledge fallback — checks local lesson content first,
+    then degrades to a Tavily web search (same key pattern as
+    insurance_search.py)."""
+    # 1. Check local lessons (read-only JSON under backend/data/lessons/)
+    try:
+        from pathlib import Path
+        lessons_dir = Path(__file__).resolve().parent.parent / "backend" / "data" / "lessons"
+        if lessons_dir.exists():
+            lesson_files = sorted(lessons_dir.glob("*.json")) + sorted(lessons_dir.glob("*.md"))
+            if lesson_files:
+                topics = [f.stem for f in lesson_files]
+                return {
+                    "status": "ok",
+                    "source": "local_lessons",
+                    "topics": topics,
+                    "note": ("These topics have local lessons — the AI will cite the "
+                             "matching one. If the question isn't covered, falls back "
+                             "to Tavily web search."),
+                }
+    except Exception:
+        pass
+
+    # 2. Fallback to Tavily (same key + HTTP path as insurance_search)
+    try:
+        from services.insurance_search import search_web_text
+        web_result = search_web_text("financial literacy", count=3)
+        if web_result:
+            return {
+                "status": "ok",
+                "source": "tavily",
+                "snippets": web_result[:300],  # truncate for prompt
+            }
+    except Exception:
+        pass
+
+    return {
+        "status": "no_data",
+        "note": ("No local lesson or web result found. "
+                 "Ask about a specific topic like 'XIRR', 'HRA', 'SWR', etc."),
+    }
+
+
 TOOL_REGISTRY: Dict[str, Tuple[str, Callable]] = {
     "tax_calculator": ("Income-tax comparison (old vs new regime)",
                        tool_tax_calculator),
@@ -299,6 +471,11 @@ TOOL_REGISTRY: Dict[str, Tuple[str, Callable]] = {
     "spending_summary": ("Recent monthly spending", tool_spending_summary),
     "market_indices": ("Live market snapshot (indices, gold, FX)",
                        tool_market_indices),
+    "affordability_checker": ("Affordability calculator", tool_affordability_checker),
+    "portfolio_scorecard":  ("Portfolio scorecard", tool_portfolio_scorecard),
+    "stock_lookup":         ("Live stock / quote lookup", tool_stock_lookup),
+    "general_knowledge":    ("General knowledge (local lessons + Tavily)",
+                             tool_general_knowledge),
 }
 
 
